@@ -176,6 +176,12 @@ def _client_concern(frame: CaseFrame) -> str | None:
         return "vehicle_retention"
     if frame.client_fears_bankruptcy:
         return "bankruptcy_fear"
+    if frame.bankruptcy_clarification_question:
+        return "bankruptcy_clarification_question"
+    if frame.mfo_rating_concern:
+        return "mfo_rating_concern"
+    if frame.credit_bureau_objection:
+        return "credit_bureau_objection"
     return None
 
 
@@ -199,6 +205,7 @@ POST_TERMINAL_BANKRUPTCY_PATTERNS = (
     "можно без банкротства",
     "без банкротства",
     "банкротство или",
+    "банкротство или реструктуризация",
 )
 
 

@@ -157,6 +157,10 @@ def _concern_body(concern: str | None) -> str:
         return "Понял, машина нужна вам для жизни или работы. Это не означает, что ее нужно отдавать."
     if concern == "bankruptcy_fear":
         return "Понимаю, что банкротство может пугать. Сейчас смотрим на законный и посильный вариант."
+    if concern in {"credit_bureau_objection", "mfo_rating_concern", "challenges_credit_bureau_claim"}:
+        return "Вы правы: МФО и займы часто портят картину для банков. Поэтому сначала считаем текущую нагрузку."
+    if concern == "bankruptcy_clarification_question":
+        return "Не обязательно банкротство. Сначала смотрят посильный график и риски."
     return "Понял вашу позицию. Уточню один факт, чтобы двигаться аккуратно."
 
 

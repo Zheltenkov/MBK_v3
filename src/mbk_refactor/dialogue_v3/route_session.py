@@ -7,7 +7,7 @@ from typing import Literal
 
 from .case_frame import CaseFrame
 from .constants import AUTO_AUX, DISCOVERY, MORTGAGE_AUX, MORTGAGE_MAIN, PTS
-from .intake_plans import get_intake_plan
+from .intake_plans import get_intake_plan, primary_slots_for_route
 from .slot_resolver import resolve_primary_slots
 from .state import DialogueV3State
 
@@ -44,14 +44,15 @@ def build_route_session(
     """Build the authoritative per-turn route session."""
 
     plan = get_intake_plan(selected_route)
-    resolution = resolve_primary_slots(plan.primary_slots, state=state, frame=frame)
+    primary_slots = primary_slots_for_route(selected_route, frame)
+    resolution = resolve_primary_slots(primary_slots, state=state, frame=frame)
     blockers = _collect_blockers(selected_route, frame)
 
     if blockers:
         return RouteSession(
             selected_route=selected_route,
             phase="BLOCKED",
-            primary_slots=plan.primary_slots,
+            primary_slots=primary_slots,
             closed_primary_slots=resolution.closed_primary_slots,
             missing_primary_slots=resolution.missing_primary_slots,
             next_slot=None,
@@ -60,7 +61,7 @@ def build_route_session(
             reason_codes=blockers,
         )
 
-    if not plan.primary_slots:
+    if not primary_slots:
         return RouteSession(
             selected_route=selected_route,
             phase="TERMINAL",
@@ -73,7 +74,7 @@ def build_route_session(
         return RouteSession(
             selected_route=selected_route,
             phase="DISCOVERY",
-            primary_slots=plan.primary_slots,
+            primary_slots=primary_slots,
             closed_primary_slots=resolution.closed_primary_slots,
             missing_primary_slots=resolution.missing_primary_slots,
             next_slot=resolution.next_slot,
@@ -85,7 +86,7 @@ def build_route_session(
         return RouteSession(
             selected_route=selected_route,
             phase="COLLECTING_PRIMARY_GATES",
-            primary_slots=plan.primary_slots,
+            primary_slots=primary_slots,
             closed_primary_slots=resolution.closed_primary_slots,
             missing_primary_slots=resolution.missing_primary_slots,
             next_slot=resolution.next_slot,
@@ -96,7 +97,7 @@ def build_route_session(
     return RouteSession(
         selected_route=selected_route,
         phase="READY_FOR_TERMINAL",
-        primary_slots=plan.primary_slots,
+        primary_slots=primary_slots,
         closed_primary_slots=resolution.closed_primary_slots,
         missing_primary_slots=[],
         next_slot=None,

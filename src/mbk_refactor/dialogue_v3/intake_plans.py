@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .constants import (
     AUTO_AUX,
@@ -25,6 +26,9 @@ from .constants import (
     SELF_SERVE_LINKS_7,
     UNSECURED,
 )
+
+if TYPE_CHECKING:
+    from .case_frame import CaseFrame
 
 
 @dataclass(frozen=True)
@@ -166,3 +170,35 @@ def get_intake_plan(route: str) -> IntakePlan:
         return INTAKE_PLANS[route]
     except KeyError as exc:
         raise ValueError(f"unknown route: {route}") from exc
+
+
+def primary_slots_for_route(route: str, frame: CaseFrame) -> list[str]:
+    """Return route primary slots, with DISCOVERY staying router-neutral."""
+
+    plan = get_intake_plan(route)
+    if route != DISCOVERY:
+        return list(plan.primary_slots)
+    return discovery_primary_slots(frame)
+
+
+def discovery_primary_slots(frame: CaseFrame) -> list[str]:
+    """Pick DISCOVERY slots from the known need without committing to a product route."""
+
+    if frame.need_type in {"debt_solution", "payment_reduction"}:
+        return [
+            "total_debt",
+            "monthly_payments",
+            "income_status",
+            "comfortable_payment",
+            "delinquency_context",
+        ]
+    if frame.early_need_signal == "repair_or_purpose":
+        return ["desired_amount_or_total_debt", "income_status", "urgency"]
+    if frame.need_type == "new_money":
+        return [
+            "desired_amount_or_total_debt",
+            "income_status",
+            "monthly_payments",
+            "delinquency_context",
+        ]
+    return ["need_type"]

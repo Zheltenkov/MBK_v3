@@ -64,6 +64,9 @@ class CaseFrame:
 
     client_wants_to_pay: bool = False
     client_fears_bankruptcy: bool = False
+    bankruptcy_clarification_question: bool = False
+    credit_bureau_objection: bool = False
+    mfo_rating_concern: bool = False
     client_refuses_debt_procedure: bool = False
     client_open_to_legal_debt_solution: bool = False
 
@@ -138,6 +141,9 @@ def build_case_frame(state: DialogueV3State) -> CaseFrame:
 
     frame.client_wants_to_pay = _bool_value(state, "client_wants_to_pay")
     frame.client_fears_bankruptcy = _bool_value(state, "client_fears_bankruptcy")
+    frame.bankruptcy_clarification_question = _bool_value(state, "bankruptcy_clarification_question")
+    frame.credit_bureau_objection = _bool_value(state, "credit_bureau_objection")
+    frame.mfo_rating_concern = _bool_value(state, "mfo_rating_concern")
     frame.client_refuses_debt_procedure = _bool_value(state, "client_refuses_debt_procedure")
     frame.client_open_to_legal_debt_solution = _bool_value(
         state, "client_open_to_legal_debt_solution"

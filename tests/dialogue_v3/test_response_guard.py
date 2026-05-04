@@ -55,6 +55,25 @@ def test_guard_rejects_handoff_language_without_terminal_action() -> None:
     assert "handoff_without_action" in validation.issue_codes
 
 
+def test_guard_allows_post_terminal_specialist_reference_without_new_action_language() -> None:
+    move = ActorMove(
+        move_type="post_terminal_answer",
+        selected_route="BFL_RD",
+        phase="READY_FOR_TERMINAL",
+        action_scope="bfl_handoff",
+    )
+
+    validation = validate_text(
+        "Вы уже перешли к специалисту по долгам. Те же вопросы заново проходить не нужно.",
+        move,
+    )
+    fresh_handoff = validate_text("Передам специалисту по долгам еще раз.", move)
+
+    assert validation.accepted
+    assert not fresh_handoff.accepted
+    assert "handoff_without_action" in fresh_handoff.issue_codes
+
+
 def test_guard_accepts_handoff_language_with_terminal_action_and_event() -> None:
     move = ActorMove(
         move_type="terminal_action",

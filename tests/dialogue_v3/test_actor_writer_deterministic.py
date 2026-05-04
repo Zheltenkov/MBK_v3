@@ -304,6 +304,20 @@ def test_llm_writer_payload_contains_runtime_context_for_manager_like_wording() 
     assert "slot_wording_hints" in payload
 
 
+def test_compact_state_summary_excludes_conflicting_facts() -> None:
+    from mbk_refactor.dialogue_v3.actor_writer import build_compact_state_summary
+    from mbk_refactor.dialogue_v3.state import DialogueV3State
+
+    state = DialogueV3State(session_id="conflict-summary")
+    state.merge_facts({"monthly_payments": 34_000})
+    state.merge_facts({"monthly_payments": 115_000})
+
+    summary = build_compact_state_summary(state)
+
+    assert state.facts["monthly_payments"].quality == "conflicting"
+    assert "monthly_payments" not in (summary.known_facts or {})
+
+
 def test_llm_mode_uses_injected_client_without_route_ownership() -> None:
     def fake_client(messages: list[dict[str, str]]) -> str:
         assert "actor_move" in messages[-1]["content"]

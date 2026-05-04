@@ -67,7 +67,7 @@ def test_generic_money_request_selects_discovery_not_product_route() -> None:
 
     assert route == DISCOVERY
     assert session.phase == "DISCOVERY"
-    assert session.next_slot == "need_type"
+    assert session.next_slot == "desired_amount_or_total_debt"
     assert session.terminal_action is None
 
 

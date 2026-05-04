@@ -48,7 +48,7 @@ def build_compact_state_summary(
     known_facts = {
         key: fact.value
         for key, fact in state.facts.items()
-        if fact.quality not in {"unknown", "not_applicable"}
+        if fact.quality not in {"unknown", "not_applicable", "conflicting"}
     }
     last_user_text = ""
     for message in reversed(state.messages):
@@ -310,8 +310,13 @@ def _objection_answer(client_concern: str | None) -> str:
         return "Риск здесь нельзя обнулить словами. Сначала нужно понять, есть ли смысл смотреть залоговый вариант до оформления."
     if client_concern == "bankruptcy_fear":
         return "Если банкротство пугает, это нормально. Сейчас смотрим не обещания, а законный и посильный вариант."
-    if client_concern == "challenges_credit_bureau_claim":
-        return "Вы правы: сам факт МФО часто портит картину для банков. Тогда тем более не будем просто докидывать новый займ."
+    if client_concern in {"challenges_credit_bureau_claim", "credit_bureau_objection", "mfo_rating_concern"}:
+        return (
+            "Вы правы: МФО и займы часто портят картину для банков, и бюро это видит. "
+            "Поэтому докидывать новый займ вслепую лучше не надо - сначала считаем текущую нагрузку."
+        )
+    if client_concern == "bankruptcy_clarification_question":
+        return "Не обязательно банкротство. Сначала смотрят нагрузку и возможность посильного графика выплат."
     return "Позицию услышал. Дальше нужен один факт, чтобы двигаться аккуратно."
 
 

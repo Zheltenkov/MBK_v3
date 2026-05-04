@@ -158,6 +158,8 @@ class ResponseGuard:
         if move.terminal_action is None:
             for marker in HANDOFF_LANGUAGE:
                 if marker in lowered:
+                    if _allowed_post_terminal_specialist_reference(move, marker):
+                        continue
                     issues.append(
                         GuardIssue(
                             "handoff_without_action",
@@ -211,3 +213,13 @@ def _contains_workflow_term(normalized_lowered_text: str, term: str) -> bool:
 
 def _is_terminal_text_move(move: ActorMove) -> bool:
     return move.terminal_action is not None or move.move_type in TERMINAL_MOVE_TYPES
+
+
+def _allowed_post_terminal_specialist_reference(move: ActorMove, marker: str) -> bool:
+    """Allow references to the already active specialist after terminal handoff."""
+
+    return bool(
+        move.move_type == "post_terminal_answer"
+        and move.action_scope is not None
+        and marker == "специалисту"
+    )

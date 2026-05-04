@@ -124,6 +124,14 @@ MONEY_REQUEST_PATTERNS = (
     "хочу кредит",
     "нужна сумма",
 )
+STRONG_NEW_MONEY_PATTERNS = (
+    "получить сумму",
+    "получить деньги на руки",
+    "сумму на руки",
+    "деньги на руки",
+    "нужна сумма на руки",
+    "нужны деньги на руки",
+)
 DEBT_SOLUTION_PATTERNS = (
     "закрыть карты",
     "закрыть карту",
@@ -269,6 +277,21 @@ BANKRUPTCY_FEAR_PATTERNS = (
     "банкротство не хочу",
     "банкротство пугает",
     "боюсь банкротства",
+)
+BANKRUPTCY_CLARIFICATION_PATTERNS = (
+    "это банкротство",
+    "можно без банкротства",
+    "банкротство или реструктуризация",
+    "банкротство или можно",
+)
+MFO_RATING_CONCERN_PATTERNS = (
+    "мфо портит рейтинг",
+    "мфо портят рейтинг",
+    "окб это видит",
+    "бюро видит мфо",
+    "займы портят кредитную историю",
+    "займы портят рейтинг",
+    "портит кредитную историю",
 )
 DEBT_PROCEDURE_HARD_REFUSAL_PATTERNS = (
     "банкротство не рассматриваю",
@@ -445,7 +468,10 @@ def extract_need_signals(text: str, facts: dict[str, Any]) -> None:
         facts["purpose_goal"] = "car_repair" if _contains_any(text, ("ремонт машины", "ремонт авто")) else "repair"
         _set_need_signal(facts, "repair_or_purpose")
     if _contains_any(text, MONEY_REQUEST_PATTERNS):
-        _set_need_signal(facts, "new_money")
+        if _contains_any(text, STRONG_NEW_MONEY_PATTERNS):
+            _set_need_signal(facts, "new_money")
+        else:
+            _set_early_need_signal(facts, "new_money")
 
 
 def extract_collateral_signals(
@@ -508,6 +534,13 @@ def extract_debt_signals(text: str, facts: dict[str, Any], concerns: list[str]) 
     if _contains_any(text, BANKRUPTCY_FEAR_PATTERNS):
         facts["client_fears_bankruptcy"] = True
         concerns.append("bankruptcy_fear")
+    if _contains_any(text, BANKRUPTCY_CLARIFICATION_PATTERNS):
+        facts["bankruptcy_clarification_question"] = True
+        concerns.append("bankruptcy_clarification_question")
+    if _contains_any(text, MFO_RATING_CONCERN_PATTERNS):
+        facts["mfo_rating_concern"] = True
+        facts["credit_bureau_objection"] = True
+        concerns.append("mfo_rating_concern")
     if _contains_any(text, DEBT_PROCEDURE_HARD_REFUSAL_PATTERNS):
         facts["client_refuses_debt_procedure"] = True
 
@@ -520,7 +553,7 @@ def extract_debt_signals(text: str, facts: dict[str, Any], concerns: list[str]) 
         facts["need_type"] = "debt_solution"
     elif _contains_any(text, PAYMENT_REDUCTION_PATTERNS) or _matches_any_regex(text, PAYMENT_REDUCTION_REGEXES):
         facts["need_type"] = "payment_reduction"
-    elif _contains_any(text, MONEY_REQUEST_PATTERNS):
+    elif _contains_any(text, STRONG_NEW_MONEY_PATTERNS):
         facts["need_type"] = "new_money"
 
 
@@ -715,12 +748,16 @@ def _derive_payment_load(facts: dict[str, Any]) -> None:
 
 
 def _set_need_signal(facts: dict[str, Any], signal: str) -> None:
-    current = str(facts.get("early_need_signal") or "unknown")
-    if NEED_SIGNAL_PRIORITY.get(signal, 0) >= NEED_SIGNAL_PRIORITY.get(current, 0):
-        facts["early_need_signal"] = signal
+    _set_early_need_signal(facts, signal)
     need_type = NEED_TYPE_BY_SIGNAL.get(signal)
     if need_type:
         facts["need_type"] = need_type
+
+
+def _set_early_need_signal(facts: dict[str, Any], signal: str) -> None:
+    current = str(facts.get("early_need_signal") or "unknown")
+    if NEED_SIGNAL_PRIORITY.get(signal, 0) >= NEED_SIGNAL_PRIORITY.get(current, 0):
+        facts["early_need_signal"] = signal
 
 
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:

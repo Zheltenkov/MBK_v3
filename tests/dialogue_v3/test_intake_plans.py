@@ -79,8 +79,28 @@ def test_discovery_is_non_product_collecting_phase() -> None:
     session = build_route_session(DISCOVERY, state=state, frame=frame)
 
     assert session.phase == "DISCOVERY"
-    assert session.next_slot == "need_type"
+    assert session.next_slot == "desired_amount_or_total_debt"
     assert session.terminal_action is None
+
+
+def test_discovery_slots_are_dynamic_by_need_type() -> None:
+    unknown_state = state_with_facts({"early_need_signal": "new_money"})
+    debt_state = state_with_facts({"need_type": "debt_solution"})
+    repair_state = state_with_facts({"early_need_signal": "repair_or_purpose"})
+
+    unknown_session = build_route_session(DISCOVERY, state=unknown_state, frame=build_case_frame(unknown_state))
+    debt_session = build_route_session(DISCOVERY, state=debt_state, frame=build_case_frame(debt_state))
+    repair_session = build_route_session(DISCOVERY, state=repair_state, frame=build_case_frame(repair_state))
+
+    assert unknown_session.primary_slots == ["need_type"]
+    assert debt_session.primary_slots == [
+        "total_debt",
+        "monthly_payments",
+        "income_status",
+        "comfortable_payment",
+        "delinquency_context",
+    ]
+    assert repair_session.primary_slots == ["desired_amount_or_total_debt", "income_status", "urgency"]
 
 
 def test_terminal_action_is_absent_before_primary_slots_close() -> None:

@@ -51,8 +51,40 @@ def test_repair_alone_is_purpose_not_mortgage() -> None:
     extracted = extract_turn("Нужны деньги на ремонт")
 
     assert extracted.facts["early_need_signal"] == "repair_or_purpose"
+    assert extracted.facts.get("need_type") != "debt_solution"
     assert "explicit_mortgage_intent" not in extracted.facts
     assert "has_property" not in extracted.facts
+
+
+def test_generic_money_request_is_early_signal_not_committed_need_type() -> None:
+    extracted = extract_turn("Хочу взять денег")
+
+    assert extracted.facts["early_need_signal"] == "new_money"
+    assert "need_type" not in extracted.facts
+
+
+def test_strong_new_money_sets_need_type() -> None:
+    extracted = extract_turn("Мне нужна сумма на руки")
+
+    assert extracted.facts["early_need_signal"] == "new_money"
+    assert extracted.facts["need_type"] == "new_money"
+
+
+def test_new_money_closes_need_type_slot() -> None:
+    state = DialogueV3State(session_id="new-money-slot")
+    state.merge_facts({"need_type": "new_money"})
+    frame = build_case_frame(state)
+
+    assert is_slot_closed("need_type", state=state, frame=frame)
+
+
+def test_mfo_rating_objection_is_on_topic_concern() -> None:
+    extracted = extract_turn("МФО портит рейтинг, ОКБ это видит")
+
+    assert extracted.off_topic is None
+    assert extracted.facts["mfo_rating_concern"] is True
+    assert extracted.facts["credit_bureau_objection"] is True
+    assert "mfo_rating_concern" in extracted.customer_concerns
 
 
 def test_explicit_mortgage_intent_does_not_fill_property_type() -> None:
@@ -437,7 +469,7 @@ def test_manual_ui_cards_repair_hotfix_flow() -> None:
     assert first.extracted.facts["purpose_goal"] == "car_repair"
     assert "explicit_pts_intent" not in first.extracted.facts
     assert first.route_session.next_slot == "total_debt"
-    assert "need_type" in first.route_session.closed_primary_slots
+    assert "need_type" not in first.route_session.missing_primary_slots
 
     second = engine.handle_turn(
         "В первую очередь закрыть карты. Если получится, часть суммы оставить на ремонт машины.",
