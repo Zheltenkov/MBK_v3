@@ -17,11 +17,6 @@ OTHER = "OTHER"
 FRAUD_CHECK = "FRAUD_CHECK"
 REPEAT_VISIT = "REPEAT_VISIT"
 
-ALIASES = {
-    "AUTO_COLLATERAL_AUX": AUTO_AUX,
-    AUTO_AUX: AUTO_AUX,
-}
-
 
 def select_route(frame: CaseFrame, state: DialogueV3State) -> str:
     """Return exactly one route; LLMs and planners do not participate."""
@@ -59,12 +54,6 @@ def select_route(frame: CaseFrame, state: DialogueV3State) -> str:
     return OTHER
 
 
-def normalize_route(route: str) -> str:
-    """Normalize legacy ids at the v3 boundary."""
-
-    return ALIASES.get(route, route)
-
-
 def _property_collateral_possible(frame: CaseFrame, state: DialogueV3State) -> bool:
     if frame.property_refuses_collateral or "MORTGAGE" in state.rejected_routes:
         return False
@@ -81,9 +70,10 @@ def _severe_debt_pressure(frame: CaseFrame) -> bool:
     arrears_severe = frame.arrears_months is not None and frame.arrears_months >= 2
     no_stable_income = frame.income_status in {"none", "unstable"}
     return bool(
-        (frame.has_mfo and (frame.collector_pressure or frame.has_arrears))
-        or (frame.collector_pressure and frame.has_arrears)
+        (frame.has_mfo and frame.collector_pressure)
+        or (frame.has_mfo and arrears_severe)
         or (arrears_severe and no_stable_income)
+        or (no_stable_income and frame.high_payment_load and frame.has_arrears)
     )
 
 

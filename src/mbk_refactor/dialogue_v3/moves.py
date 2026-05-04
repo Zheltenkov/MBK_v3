@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from .case_frame import CaseFrame
 from .route_session import RouteSession
+from .state import DialogueV3State
 
 MoveType = Literal[
     "ask_slot",
@@ -38,7 +39,23 @@ class ActorMove:
     style_profile: str = "calm_manager"
 
 
-def plan_actor_move(route_session: RouteSession, *, frame: CaseFrame) -> ActorMove:
+ACTION_SCOPE_BY_TERMINAL_ACTION = {
+    "HANDOFF_EXPERT": "handoff_expert",
+    "HANDOFF_BFL_SPECIALIST": "bfl_handoff",
+    "MANUAL_REVIEW": "manual_review",
+    "SECURITY_FLOW": "security_check",
+    "REPEAT_HANDOFF": "repeat_handoff",
+    "SELF_SERVE_LINKS_3": "self_serve_links",
+    "SELF_SERVE_LINKS_7": "self_serve_links",
+}
+
+
+def plan_actor_move(
+    route_session: RouteSession,
+    *,
+    frame: CaseFrame,
+    state: DialogueV3State | None = None,
+) -> ActorMove:
     """Plan the next actor move from deterministic route/session state."""
 
     if route_session.selected_route == "FRAUD_CHECK":
@@ -47,7 +64,8 @@ def plan_actor_move(route_session: RouteSession, *, frame: CaseFrame) -> ActorMo
             selected_route=route_session.selected_route,
             phase=route_session.phase,
             terminal_action=route_session.terminal_action,
-            action_scope="security_check",
+            action_scope=terminal_action_scope(route_session.terminal_action),
+            known_facts=build_terminal_known_facts(route_session.selected_route, state),
             must_say=["do_not_share_codes"],
         )
 
@@ -57,7 +75,8 @@ def plan_actor_move(route_session: RouteSession, *, frame: CaseFrame) -> ActorMo
             selected_route=route_session.selected_route,
             phase=route_session.phase,
             terminal_action=route_session.terminal_action,
-            action_scope="repeat_visit_restore",
+            action_scope=terminal_action_scope(route_session.terminal_action),
+            known_facts=build_terminal_known_facts(route_session.selected_route, state),
         )
 
     if route_session.selected_route == "OTHER" or route_session.blockers:
@@ -67,6 +86,11 @@ def plan_actor_move(route_session: RouteSession, *, frame: CaseFrame) -> ActorMo
             phase=route_session.phase,
             terminal_action=route_session.terminal_action or "MANUAL_REVIEW",
             client_concern=_client_concern(frame),
+            known_facts=_with_session_reasons(
+                build_terminal_known_facts(route_session.selected_route, state),
+                route_session,
+            ),
+            action_scope=terminal_action_scope(route_session.terminal_action or "MANUAL_REVIEW"),
         )
 
     if frame.off_topic_kind and route_session.next_slot:
@@ -116,7 +140,8 @@ def plan_actor_move(route_session: RouteSession, *, frame: CaseFrame) -> ActorMo
             selected_route=route_session.selected_route,
             phase=route_session.phase,
             terminal_action=route_session.terminal_action,
-            action_scope="route_terminal",
+            known_facts=build_terminal_known_facts(route_session.selected_route, state),
+            action_scope=terminal_action_scope(route_session.terminal_action),
         )
 
     return ActorMove(
@@ -124,6 +149,7 @@ def plan_actor_move(route_session: RouteSession, *, frame: CaseFrame) -> ActorMo
         selected_route=route_session.selected_route,
         phase=route_session.phase,
         terminal_action="MANUAL_REVIEW",
+        action_scope=terminal_action_scope("MANUAL_REVIEW"),
     )
 
 
@@ -135,3 +161,97 @@ def _client_concern(frame: CaseFrame) -> str | None:
     if frame.client_fears_bankruptcy:
         return "bankruptcy_fear"
     return None
+
+
+def terminal_action_scope(terminal_action: str | None) -> str | None:
+    """Describe an already selected terminal action for writer wording only."""
+
+    if not terminal_action:
+        return None
+    return ACTION_SCOPE_BY_TERMINAL_ACTION.get(terminal_action)
+
+
+def build_terminal_known_facts(
+    route: str,
+    state: DialogueV3State | None,
+) -> dict[str, Any]:
+    """Build compact terminal writer facts without exposing raw mutable state."""
+
+    if state is None:
+        return {}
+
+    if route in {"PTS", "AUTO_AUX"}:
+        return _known(
+            state,
+            {
+                "raw_car_name": "car",
+                "car_brand": "car_brand",
+                "car_model": "car_model",
+                "car_year": "car_year",
+                "car_owner": "car_owner",
+                "car_in_pledge": "car_in_pledge",
+                "car_arrest_or_restriction": "car_arrest_or_restriction",
+            },
+        )
+    if route in {"MORTGAGE_MAIN", "MORTGAGE_AUX"}:
+        return _known(
+            state,
+            {
+                "property_type": "property_type",
+                "property_region": "property_region",
+                "property_owner": "property_owner_or_ownership",
+                "property_owner_known": "property_owner_known",
+                "property_encumbrance": "property_encumbrance_basic",
+                "property_encumbrance_type": "property_encumbrance_type",
+            },
+        )
+    if route in {"BFL_RD", "BFL_RI"}:
+        return _known(
+            state,
+            {
+                "total_debt": "total_debt",
+                "monthly_payments": "monthly_payments",
+                "income_status": "income_status",
+                "comfortable_payment": "comfortable_payment",
+                "has_arrears": "has_arrears",
+                "arrears_months": "delinquency_context",
+                "loan_types": "loan_types",
+                "client_wants_to_pay": "client_wants_to_pay",
+            },
+        )
+    if route in {"UNSECURED", "MICRO"}:
+        return _known(
+            state,
+            {
+                "desired_amount": "desired_amount_or_total_debt",
+                "total_debt": "desired_amount_or_total_debt",
+                "income_status": "income_status",
+                "monthly_payments": "monthly_payments",
+                "has_arrears": "delinquency_context",
+                "arrears_months": "delinquency_context",
+                "urgency": "urgency",
+            },
+        )
+    if route == "FRAUD_CHECK":
+        return _known(state, {"service_signal": "service_reason"})
+    if route == "REPEAT_VISIT":
+        return _known(state, {"service_signal": "repeat_reason"})
+    return {}
+
+
+def _known(state: DialogueV3State, mapping: dict[str, str]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for fact_key, output_key in mapping.items():
+        value = state.fact_value(fact_key)
+        if value is not None:
+            result[output_key] = value
+    return result
+
+
+def _with_session_reasons(facts: dict[str, Any], route_session: RouteSession) -> dict[str, Any]:
+    result = dict(facts)
+    if route_session.blockers:
+        result["blockers"] = list(route_session.blockers)
+    if route_session.reason_codes:
+        result["reason_codes"] = list(route_session.reason_codes)
+    return result

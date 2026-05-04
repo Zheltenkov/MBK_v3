@@ -124,4 +124,76 @@ def test_engine_terminal_action_only_after_primary_slots_for_product_flow() -> N
     assert [event.action_id for event in result.events] == ["HANDOFF_EXPERT"]
     assert result.events[0].action_id == result.actor_move.terminal_action
     assert result.events[0].selected_route == result.trace.selected_route
+    assert result.actor_move.action_scope == "handoff_expert"
+    assert result.actor_move.known_facts["car"] == "Kia Rio"
+    assert result.actor_move.known_facts["car_year"] == 2019
+    assert result.actor_move.known_facts["car_owner"] == "client"
+    assert result.actor_move.known_facts["car_in_pledge"] is False
+    assert result.actor_move.known_facts["car_arrest_or_restriction"] is False
+    assert "has_car" not in result.actor_move.known_facts
     assert "передам" in result.text.lower()
+
+
+def test_engine_terminal_self_serve_links_has_action_scope_and_no_handoff_wording() -> None:
+    state = DialogueV3State(session_id="test")
+    state.turn_index = 1
+    state.merge_facts(
+        {
+            "desired_amount": 80_000,
+            "income_status": "stable",
+            "monthly_payments": 8_000,
+            "has_arrears": False,
+            "urgency": "today",
+        }
+    )
+
+    result = DialogueV3Engine().handle_turn("Да", state)
+
+    assert result.trace.selected_route == "UNSECURED"
+    assert result.trace.terminal_action == "SELF_SERVE_LINKS_3"
+    assert result.actor_move.action_scope == "self_serve_links"
+    assert result.actor_move.known_facts["desired_amount_or_total_debt"] == 80_000
+    assert result.actor_move.known_facts["urgency"] == "today"
+    assert "передам специалисту" not in result.text.lower()
+
+
+def test_engine_terminal_bfl_handoff_has_scope_and_compact_known_facts() -> None:
+    state = DialogueV3State(session_id="test")
+    state.turn_index = 1
+    state.merge_facts(
+        {
+            "has_current_loans": True,
+            "total_debt": 1_700_000,
+            "monthly_payments": 78_000,
+            "income_status": "stable",
+            "comfortable_payment": 35_000,
+            "has_arrears": False,
+            "client_wants_to_pay": True,
+        }
+    )
+
+    result = DialogueV3Engine().handle_turn("Хочу платить, но меньше", state)
+
+    assert result.trace.selected_route == "BFL_RD"
+    assert result.trace.terminal_action == "HANDOFF_BFL_SPECIALIST"
+    assert result.actor_move.action_scope == "bfl_handoff"
+    assert result.actor_move.known_facts["total_debt"] == 1_700_000
+    assert result.actor_move.known_facts["monthly_payments"] == 78_000
+    assert result.actor_move.known_facts["income_status"] == "stable"
+    assert result.actor_move.known_facts["comfortable_payment"] == 35_000
+    assert result.actor_move.known_facts["client_wants_to_pay"] is True
+    assert "has_current_loans" not in result.actor_move.known_facts
+    assert "специалисту по долгам" in result.text.lower()
+
+
+def test_engine_bfl_rd_stable_income_smoke_text_reaches_terminal() -> None:
+    result = DialogueV3Engine().handle_turn(
+        "Долг 1.7 млн, плачу 78 тыс, доход 125 тыс, комфортно 35 тыс, "
+        "просрочка 1 месяц. Банкротство не хочу, хочу платить."
+    )
+
+    assert result.extracted.facts.get("has_mfo") is not True
+    assert result.trace.selected_route == "BFL_RD"
+    assert result.trace.terminal_action == "HANDOFF_BFL_SPECIALIST"
+    assert [event.action_id for event in result.events] == ["HANDOFF_BFL_SPECIALIST"]
+    assert result.actor_move.action_scope == "bfl_handoff"

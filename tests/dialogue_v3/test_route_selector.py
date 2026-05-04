@@ -90,3 +90,68 @@ def test_repeat_visit_immediately_selects_repeat_visit() -> None:
     frame = build_case_frame(state)
 
     assert select_route(frame, state) == "REPEAT_VISIT"
+
+
+def test_stable_income_short_arrears_and_wants_to_pay_selects_bfl_rd() -> None:
+    state = state_with_facts(
+        {
+            "has_current_loans": True,
+            "has_mfo": True,
+            "total_debt": 1_700_000,
+            "monthly_payments": 78_000,
+            "official_income": 125_000,
+            "income_status": "stable",
+            "comfortable_payment": 35_000,
+            "has_arrears": True,
+            "arrears_months": 1.0,
+            "collector_pressure": False,
+            "client_wants_to_pay": True,
+            "high_payment_load": True,
+            "payment_gap_large": True,
+        }
+    )
+
+    assert select_route(build_case_frame(state), state) == "BFL_RD"
+
+
+def test_mfo_collectors_and_arrears_selects_bfl_ri() -> None:
+    state = state_with_facts(
+        {
+            "has_current_loans": True,
+            "has_mfo": True,
+            "has_arrears": True,
+            "arrears_months": 1.0,
+            "collector_pressure": True,
+            "income_status": "stable",
+        }
+    )
+
+    assert select_route(build_case_frame(state), state) == "BFL_RI"
+
+
+def test_mfo_severe_arrears_selects_bfl_ri() -> None:
+    state = state_with_facts(
+        {
+            "has_current_loans": True,
+            "has_mfo": True,
+            "has_arrears": True,
+            "arrears_months": 2.0,
+            "collector_pressure": False,
+            "income_status": "stable",
+        }
+    )
+
+    assert select_route(build_case_frame(state), state) == "BFL_RI"
+
+
+def test_no_stable_income_and_severe_arrears_selects_bfl_ri() -> None:
+    state = state_with_facts(
+        {
+            "has_current_loans": True,
+            "has_arrears": True,
+            "arrears_months": 3.0,
+            "income_status": "unstable",
+        }
+    )
+
+    assert select_route(build_case_frame(state), state) == "BFL_RI"

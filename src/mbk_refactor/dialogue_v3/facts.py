@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 FactQuality = Literal["unknown", "approx", "exact", "conflicting", "not_applicable"]
 FactSource = Literal["user", "form", "derived", "llm_extractor"]
@@ -103,26 +103,20 @@ def extract_turn(user_message: str, *, turn_index: int = 0) -> ExtractedTurn:
     )
 
 
-def fact_values_from_mapping(
-    facts: Mapping[str, Any],
-    *,
-    turn_index: int,
-    source: FactSource = "user",
-) -> dict[str, FactValue]:
-    """Convert raw extracted facts into canonical values."""
-
-    return {
-        key: coerce_fact_value(value, turn_index=turn_index, source=source)
-        for key, value in facts.items()
-    }
-
-
 def _normalize_text(text: str) -> str:
     return " ".join(text.lower().replace("ё", "е").split())
 
 
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in text for pattern in patterns)
+
+
+def _has_mfo_signal(text: str) -> bool:
+    return bool(
+        re.search(r"(?<![а-яёa-z])м\s*ф\s*о(?![а-яёa-z])", text)
+        or re.search(r"(?<![а-яёa-z])микро\s*займ[а-яё]*(?![а-яёa-z])", text)
+        or re.search(r"(?<![а-яёa-z])займ\s+до\s+зарплат[а-яё]*(?![а-яёa-z])", text)
+    )
 
 
 def _detect_service_signal(text: str) -> str | None:
@@ -306,10 +300,11 @@ def _extract_vehicle_facts(text: str, facts: dict[str, Any], concerns: list[str]
 
 
 def _extract_debt_and_income_facts(text: str, facts: dict[str, Any], concerns: list[str]) -> None:
-    if _contains_any(text, ("кредит", "кредиты", "карты", "долг", "долги", "мфо", "займ")):
+    has_mfo_signal = _has_mfo_signal(text)
+    if _contains_any(text, ("кредит", "кредиты", "карты", "долг", "долги", "займ")) or has_mfo_signal:
         facts["has_current_loans"] = True
 
-    if _contains_any(text, ("мфо", "микрозайм", "микрозаймы")):
+    if has_mfo_signal:
         facts["has_mfo"] = True
 
     total_debt = _find_amount_near(text, ("долг", "долги", "задолженность"))
@@ -372,7 +367,7 @@ def _extract_debt_and_income_facts(text: str, facts: dict[str, Any], concerns: l
 
     if _contains_any(text, ("закрыть карты", "закрыть кредиты", "снизить платеж", "платеж меньше")):
         facts["need_type"] = "payment_reduction"
-    elif _contains_any(text, ("мфо", "коллектор", "банкрот", "долг", "долги")):
+    elif has_mfo_signal or _contains_any(text, ("коллектор", "банкрот", "долг", "долги")):
         facts["need_type"] = "debt_solution"
     elif _contains_any(text, ("нужны деньги", "нужна сумма", "хочу кредит", "под птс")):
         facts["need_type"] = "new_money"

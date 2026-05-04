@@ -29,6 +29,17 @@ INTERNAL_WORDS = [
     "валидатор",
 ]
 
+INTERNAL_WORKFLOW_TERMS = [
+    "ветка",
+    "ветке",
+    "ветку",
+    "сбор данных",
+    "дособерем данные",
+    "этап сбора",
+    "маршрут",
+    "сценарий",
+]
+
 FORBIDDEN_CLAIMS = [
     "точно одобрят",
     "гарантированно одобрят",
@@ -69,6 +80,13 @@ CODE_EXECUTION_MARKERS = [
     "translation:",
 ]
 
+TERMINAL_MOVE_TYPES = {
+    "terminal_action",
+    "security_action",
+    "repeat_action",
+    "no_solution_manual_review",
+}
+
 
 @dataclass(frozen=True)
 class GuardIssue:
@@ -107,9 +125,28 @@ class ResponseGuard:
         if text.count("?") > 1:
             issues.append(GuardIssue("too_many_questions", "response has more than one question"))
 
+        if _is_terminal_text_move(move):
+            if output.followup_question.strip() or "?" in text:
+                issues.append(
+                    GuardIssue(
+                        "terminal_followup_question",
+                        "terminal response must not ask a follow-up question",
+                    )
+                )
+
         for word in INTERNAL_WORDS:
             if _contains_internal_word(lowered, word):
                 issues.append(GuardIssue("internal_word", f"internal word is visible: {word}"))
+
+        normalized_lowered = lowered.replace("ё", "е")
+        for term in INTERNAL_WORKFLOW_TERMS:
+            if _contains_workflow_term(normalized_lowered, term):
+                issues.append(
+                    GuardIssue(
+                        "internal_workflow_term",
+                        f"internal workflow term is visible: {term}",
+                    )
+                )
 
         for marker in FORBIDDEN_CLAIMS:
             if marker in lowered:
@@ -155,3 +192,19 @@ def _contains_internal_word(lowered_text: str, word: str) -> bool:
     if lowered_word.isascii():
         return bool(re.search(rf"\b{re.escape(lowered_word)}\b", lowered_text))
     return lowered_word in lowered_text
+
+
+def _contains_workflow_term(normalized_lowered_text: str, term: str) -> bool:
+    normalized_term = term.lower().replace("ё", "е")
+    if " " in normalized_term:
+        return normalized_term in normalized_lowered_text
+    return bool(
+        re.search(
+            rf"(?<![A-Za-zА-Яа-яЁё0-9_]){re.escape(normalized_term)}(?![A-Za-zА-Яа-яЁё0-9_])",
+            normalized_lowered_text,
+        )
+    )
+
+
+def _is_terminal_text_move(move: ActorMove) -> bool:
+    return move.terminal_action is not None or move.move_type in TERMINAL_MOVE_TYPES

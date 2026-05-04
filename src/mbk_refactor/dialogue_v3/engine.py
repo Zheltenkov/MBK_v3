@@ -71,7 +71,7 @@ class DialogueV3Engine:
         route_session = build_route_session(selected_route, state=current_state, frame=frame)
         current_state.route = route_session
 
-        actor_move = plan_actor_move(route_session, frame=frame)
+        actor_move = plan_actor_move(route_session, frame=frame, state=current_state)
         state_summary = build_compact_state_summary(current_state)
         writer_output = self.actor_writer.write(
             move=actor_move,

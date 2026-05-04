@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Literal
 
 from .actor_prompts import ACTOR_STYLE_PACK, FEW_SHOT_EXAMPLES, SYSTEM_PROMPT
-from .moves import ActorMove
+from .moves import ActorMove, terminal_action_scope
 from .response_guard import GuardValidation
 from .safe_fallback import ActorWriterOutput, deterministic_question_for_slot
 from .state import DialogueV3State
@@ -148,9 +148,7 @@ class ActorWriter:
             return ActorWriterOutput(body=_terminal_body(move))
 
         if move.move_type == "no_solution_manual_review":
-            return ActorWriterOutput(
-                body="Автоматически обещать решение здесь нельзя. Передам ситуацию специалисту для аккуратной проверки."
-            )
+            return ActorWriterOutput(body=_terminal_body(move))
 
         return ActorWriterOutput(
             body="Сейчас не могу корректно сформулировать ответ. Напишите, пожалуйста, еще раз."
@@ -194,10 +192,11 @@ def _offtopic_redirect(
     state_summary: CompactStateSummary | None,
 ) -> str:
     text = (state_summary.last_user_text if state_summary else "").lower()
+    prefix = _client_name_prefix(move=move, state_summary=state_summary)
     if "python" in text or "код" in text:
-        return "Сергей, Python - это точно не ко мне. Я здесь по кредитам, долгам и вариантам снижения нагрузки."
+        return f"{prefix}Python - это точно не ко мне. Я здесь по кредитам, долгам и вариантам снижения нагрузки."
     if "english" in text:
-        return "English здесь не нужен, Сергей. Разбираем российские долги, рубли и платежи. Давайте по делу."
+        return f"{prefix}English здесь не нужен. Разбираем российские долги, рубли и платежи. Давайте по делу."
     if "бот" in text or "робот" in text or "ии" in text:
         return "Я здесь как специалист по кредитам и долгам: смотрю вашу ситуацию и веду к следующему рабочему шагу."
     return "Давайте вернемся к вашей финансовой ситуации."
@@ -216,12 +215,31 @@ def _objection_answer(client_concern: str | None) -> str:
 
 
 def _terminal_body(move: ActorMove) -> str:
-    if move.selected_route == "BFL_RD":
-        return "Новый кредит здесь не выглядит первым вариантом: платеж уже выше комфортного, но вы хотите платить. Передам специалисту по долгам - он проверит законный посильный график без обещаний заранее."
-    if move.selected_route == "BFL_RI":
-        return "Здесь важнее разбор долговой нагрузки и просрочек, а не новый займ вслепую. Передам специалисту по долгам для проверки вариантов без обещаний заранее."
-    if move.selected_route in {"PTS", "MORTGAGE_MAIN", "MORTGAGE_AUX", "AUTO_AUX"}:
+    scope = move.action_scope or terminal_action_scope(move.terminal_action)
+    if scope == "bfl_handoff":
+        return "Передам специалисту по долгам - он проверит законный вариант снижения нагрузки и сравнит решения без обещаний заранее."
+    if scope == "handoff_expert":
         return "Базовые данные собраны. Передам ситуацию специалисту: он проверит подходящий формат и ограничения без обещаний заранее."
-    if move.selected_route in {"UNSECURED", "MICRO"}:
-        return "Базовые данные собраны. Отправлю на проверку подходящего варианта без обещаний по одобрению или условиям."
+    if scope == "manual_review":
+        return "Автоматически обещать решение здесь нельзя. Передам на ручной разбор, чтобы ситуацию проверили аккуратно."
+    if scope == "self_serve_links":
+        return "По базовым данным можно показать варианты для самостоятельной подачи. Перед заявкой сверяйте условия и платеж без обещаний по одобрению."
+    if scope == "security_check":
+        return "Код из СМС никому не сообщайте. Сейчас это вопрос безопасности: проверим обращение и не будем передавать лишние данные в чате."
+    if scope == "repeat_handoff":
+        return "Это повторное обращение после перехода к специалисту. Анкету заново проходить не нужно - восстановим контакт и отметим, что ответа не было."
     return "Передам ситуацию специалисту для проверки без обещаний заранее."
+
+
+def _client_name_prefix(
+    *,
+    move: ActorMove,
+    state_summary: CompactStateSummary | None,
+) -> str:
+    known_facts = dict(state_summary.known_facts or {}) if state_summary else {}
+    known_facts.update(move.known_facts or {})
+    raw_name = known_facts.get("client_first_name") or known_facts.get("full_name")
+    if not isinstance(raw_name, str):
+        return ""
+    first_name = raw_name.strip().split()[0] if raw_name.strip() else ""
+    return f"{first_name}, " if first_name else ""

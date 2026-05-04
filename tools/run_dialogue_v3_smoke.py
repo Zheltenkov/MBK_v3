@@ -8,7 +8,9 @@ observed invariants.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
@@ -21,6 +23,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from mbk_refactor.dialogue_v3 import ActorWriter  # noqa: E402
+from mbk_refactor.dialogue_v3.actor_prompts import FEW_SHOT_EXAMPLES  # noqa: E402
 from mbk_refactor.dialogue_v3.engine import DialogueV3Engine, DialogueV3TurnResult  # noqa: E402
 from mbk_refactor.dialogue_v3.llm_client import build_optional_llm_client  # noqa: E402
 from mbk_refactor.dialogue_v3.response_guard import HANDOFF_LANGUAGE  # noqa: E402
@@ -144,6 +147,10 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
     ),
 ]
 
+MIN_FEW_SHOT_BODY_COPY_LENGTH = 40
+FEW_SHOT_BODY_COPY_RATIO = 0.88
+FEW_SHOT_GOOD_BODIES: tuple[str, ...] | None = None
+
 
 def main() -> int:
     args = _parse_args()
@@ -233,7 +240,7 @@ def _run_scenario(
             turns.append({"user_text": user_text, "error": str(exc)})
             break
 
-        turn_payload = _turn_result_to_payload(final_result)
+        turn_payload = _turn_result_to_payload(final_result, writer_mode=writer_mode)
         turns.append(turn_payload)
         violations.extend(_turn_violations(turn_payload, scenario))
         state = final_result.state
@@ -282,10 +289,16 @@ def _turn_violations(turn_payload: dict[str, Any], scenario: SmokeScenario) -> l
     )
     if "internal_word" in validation_codes:
         violations.append("internal_words")
+    if "internal_workflow_term" in validation_codes:
+        violations.append("internal_workflow_term")
+    if "terminal_followup_question" in validation_codes:
+        violations.append("terminal_followup_question")
     if "handoff_without_action" in validation_codes or _handoff_without_event(turn_payload):
         violations.append("handoff_without_event")
     if "offtopic_executed" in validation_codes:
         violations.append("off_topic_executed")
+    if turn_payload.get("writer_mode") != "deterministic" and _few_shot_body_copy(turn_payload):
+        violations.append("few_shot_body_copy")
 
     selected_route = turn_payload.get("selected_route")
     if scenario.expected_route != "OTHER" and selected_route == "OTHER":
@@ -327,6 +340,9 @@ def _build_summary(scenario_results: list[dict[str, Any]]) -> dict[str, Any]:
     hard_zero_violations = {
         "empty_response",
         "internal_words",
+        "internal_workflow_term",
+        "terminal_followup_question",
+        "few_shot_body_copy",
         "handoff_without_event",
         "early_other",
     }
@@ -360,9 +376,10 @@ def _write_artifact(payload: dict[str, Any], *, artifact_dir: Path) -> Path:
     return artifact_path
 
 
-def _turn_result_to_payload(result: DialogueV3TurnResult) -> dict[str, Any]:
+def _turn_result_to_payload(result: DialogueV3TurnResult, *, writer_mode: WriterMode) -> dict[str, Any]:
     return {
         "turn": result.state.turn_index,
+        "writer_mode": writer_mode,
         "user_text": result.extracted.raw_user_text,
         "assistant_text": result.text,
         "selected_route": result.route_session.selected_route,
@@ -377,6 +394,10 @@ def _turn_result_to_payload(result: DialogueV3TurnResult) -> dict[str, Any]:
         "case_frame": _to_plain(result.frame),
         "route_session": _to_plain(result.route_session),
         "actor_move": _to_plain(result.actor_move),
+        "writer_output": {
+            "body": result.writer_output.body,
+            "followup_question": result.writer_output.followup_question,
+        },
         "validation_problems": [
             {"code": issue.code, "message": issue.message}
             for issue in result.writer_validation.issues
@@ -458,6 +479,53 @@ def _to_plain(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_to_plain(item) for item in value]
     return value
+
+
+def _few_shot_body_copy(turn_payload: dict[str, Any]) -> bool:
+    """Catch exact or near-exact reuse of long few-shot body text."""
+
+    writer_output = turn_payload.get("writer_output")
+    if not isinstance(writer_output, dict):
+        return False
+
+    body = str(writer_output.get("body") or "")
+    normalized_body = _normalize_copy_text(body)
+    if len(normalized_body) < MIN_FEW_SHOT_BODY_COPY_LENGTH:
+        return False
+
+    for few_shot_body in _few_shot_good_bodies():
+        if normalized_body == few_shot_body:
+            return True
+        length_ratio = min(len(normalized_body), len(few_shot_body)) / max(
+            len(normalized_body),
+            len(few_shot_body),
+        )
+        if length_ratio >= 0.75:
+            similarity = difflib.SequenceMatcher(None, normalized_body, few_shot_body).ratio()
+            if similarity >= FEW_SHOT_BODY_COPY_RATIO:
+                return True
+    return False
+
+
+def _normalize_copy_text(text: str) -> str:
+    normalized = text.lower().replace("ё", "е")
+    normalized = re.sub(r"[\"'«»“”„`]", "", normalized)
+    normalized = re.sub(r"[-–—]+", " ", normalized)
+    normalized = re.sub(r"[^\w\s]", "", normalized, flags=re.UNICODE)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
+
+
+def _few_shot_good_bodies() -> tuple[str, ...]:
+    global FEW_SHOT_GOOD_BODIES
+    if FEW_SHOT_GOOD_BODIES is None:
+        FEW_SHOT_GOOD_BODIES = tuple(
+            normalized
+            for example in FEW_SHOT_EXAMPLES
+            if (body := str(example.get("good_json", {}).get("body") or "").strip())
+            if len(normalized := _normalize_copy_text(body)) >= MIN_FEW_SHOT_BODY_COPY_LENGTH
+        )
+    return FEW_SHOT_GOOD_BODIES
 
 
 if __name__ == "__main__":

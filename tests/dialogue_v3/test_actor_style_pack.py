@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from mbk_refactor.dialogue_v3.actor_prompts import ACTOR_STYLE_PACK, SYSTEM_PROMPT
+from mbk_refactor.dialogue_v3.actor_prompts import ACTOR_STYLE_PACK, FEW_SHOT_EXAMPLES, SYSTEM_PROMPT
 from mbk_refactor.dialogue_v3.actor_writer import ActorWriter, CompactStateSummary
 from mbk_refactor.dialogue_v3.engine import DialogueV3Engine
 from mbk_refactor.dialogue_v3.moves import ActorMove
@@ -12,6 +12,33 @@ from mbk_refactor.dialogue_v3.response_guard import ResponseGuard
 def test_actor_style_pack_is_present_in_system_prompt() -> None:
     assert "занятый специалист" in ACTOR_STYLE_PACK
     assert ACTOR_STYLE_PACK in SYSTEM_PROMPT
+
+
+def test_bankruptcy_fear_few_shot_is_present() -> None:
+    examples = {example["name"]: example for example in FEW_SHOT_EXAMPLES}
+
+    assert "bankruptcy_fear" in examples
+    assert examples["bankruptcy_fear"]["move"]["client_concern"] == "bankruptcy_fear"
+
+
+def test_prompt_says_few_shots_are_behavior_patterns_not_phrase_bank() -> None:
+    assert "не банк готовых фраз" in SYSTEM_PROMPT.lower()
+    assert "не копируй формулировки дословно" in SYSTEM_PROMPT.lower()
+    assert "не копируй body из few-shot дословно или почти дословно" in SYSTEM_PROMPT.lower()
+    assert "не должны быть калькой с примеров" in SYSTEM_PROMPT.lower()
+    assert "если фраза из примера подходит, все равно переформулируй" in SYSTEM_PROMPT.lower()
+    assert "демонстрация хода мысли" in SYSTEM_PROMPT.lower()
+
+
+def test_prompt_says_terminal_action_does_not_ask_new_question() -> None:
+    assert "если terminal_action уже выбран backend" in SYSTEM_PROMPT.lower()
+    assert "не задавай новый вопрос" in SYSTEM_PROMPT.lower()
+    assert "объясни следующий шаг и остановись" in SYSTEM_PROMPT.lower()
+
+
+def test_prompt_forbids_hardcoded_example_names() -> None:
+    assert "не используй имя клиента, если оно не передано" in SYSTEM_PROMPT.lower()
+    assert "не подставляй имена из примеров" in SYSTEM_PROMPT.lower()
 
 
 def test_python_offtopic_is_not_executed() -> None:

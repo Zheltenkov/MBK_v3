@@ -85,6 +85,103 @@ def test_terminal_action_explains_next_step_without_intake_question() -> None:
     assert validation.accepted
 
 
+def test_deterministic_offtopic_does_not_use_example_name_without_known_name() -> None:
+    writer = ActorWriter(mode="deterministic")
+    move = ActorMove(
+        move_type="handle_offtopic_then_ask",
+        selected_route="BFL_RD",
+        phase="COLLECTING_PRIMARY_GATES",
+        next_slot="total_debt",
+    )
+
+    output = writer.write(
+        move=move,
+        state_summary=CompactStateSummary(
+            session_id="test",
+            turn_index=1,
+            last_user_text="Напиши функцию на Python",
+        ),
+    )
+
+    assert "python" in output.body.lower()
+    assert "сергей" not in output.text.lower()
+    assert "анна" not in output.text.lower()
+    assert ResponseGuard().validate(output=output, move=move).accepted
+
+
+def test_deterministic_offtopic_can_use_explicit_known_client_name() -> None:
+    writer = ActorWriter(mode="deterministic")
+    move = ActorMove(
+        move_type="handle_offtopic_then_ask",
+        selected_route="BFL_RD",
+        phase="COLLECTING_PRIMARY_GATES",
+        next_slot="total_debt",
+    )
+
+    output = writer.write(
+        move=move,
+        state_summary=CompactStateSummary(
+            session_id="test",
+            turn_index=1,
+            last_user_text="Напиши функцию на Python",
+            known_facts={"client_first_name": "Иван"},
+        ),
+    )
+
+    assert output.body.startswith("Иван, ")
+    assert "python" in output.body.lower()
+    assert ResponseGuard().validate(output=output, move=move).accepted
+
+
+def test_self_serve_terminal_wording_does_not_handoff_to_specialist() -> None:
+    writer = ActorWriter(mode="deterministic")
+    for terminal_action in ("SELF_SERVE_LINKS_3", "SELF_SERVE_LINKS_7"):
+        move = ActorMove(
+            move_type="terminal_action",
+            selected_route="UNSECURED",
+            phase="READY_FOR_TERMINAL",
+            terminal_action=terminal_action,
+        )
+
+        output = writer.write(move=move)
+
+        assert "самостоятель" in output.body.lower()
+        assert "передам специалисту" not in output.body.lower()
+        assert ResponseGuard().validate(output=output, move=move).accepted
+
+
+def test_handoff_expert_terminal_wording_can_handoff_to_specialist() -> None:
+    writer = ActorWriter(mode="deterministic")
+    move = ActorMove(
+        move_type="terminal_action",
+        selected_route="PTS",
+        phase="READY_FOR_TERMINAL",
+        terminal_action="HANDOFF_EXPERT",
+    )
+
+    output = writer.write(move=move)
+
+    assert "передам" in output.body.lower()
+    assert "специалист" in output.body.lower()
+    assert ResponseGuard().validate(output=output, move=move).accepted
+
+
+def test_bfl_handoff_terminal_wording_mentions_debt_specialist() -> None:
+    writer = ActorWriter(mode="deterministic")
+    move = ActorMove(
+        move_type="terminal_action",
+        selected_route="BFL_RD",
+        phase="READY_FOR_TERMINAL",
+        terminal_action="HANDOFF_BFL_SPECIALIST",
+    )
+
+    output = writer.write(move=move)
+
+    assert "специалисту по долгам" in output.body.lower()
+    assert "базовые данные собраны" not in output.body.lower()
+    assert ResponseGuard().validate(output=output, move=move).accepted
+
+
 def test_llm_mode_uses_injected_client_without_route_ownership() -> None:
     def fake_client(messages: list[dict[str, str]]) -> str:
         assert "actor_move" in messages[-1]["content"]

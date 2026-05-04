@@ -16,21 +16,6 @@ class ActionEvent:
     payload: dict[str, Any]
 
 
-ACTION_BY_ROUTE = {
-    "MORTGAGE_MAIN": "HANDOFF_EXPERT",
-    "MORTGAGE_AUX": "SELF_SERVE_LINKS_3",
-    "PTS": "HANDOFF_EXPERT",
-    "AUTO_AUX": "SELF_SERVE_LINKS_3",
-    "BFL_RI": "HANDOFF_BFL_SPECIALIST",
-    "BFL_RD": "HANDOFF_BFL_SPECIALIST",
-    "UNSECURED": "SELF_SERVE_LINKS_3",
-    "MICRO": "SELF_SERVE_LINKS_7",
-    "FRAUD_CHECK": "SECURITY_FLOW",
-    "REPEAT_VISIT": "REPEAT_HANDOFF",
-    "OTHER": "MANUAL_REVIEW",
-}
-
-
 def execute_if_needed(move: ActorMove, state: DialogueV3State) -> list[ActionEvent]:
     """Create a terminal event stub when backend selected an action."""
 

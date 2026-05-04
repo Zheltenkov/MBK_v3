@@ -82,6 +82,61 @@ def test_guard_rejects_terminal_action_without_matching_event() -> None:
     assert "missing_action_event" in validation.issue_codes
 
 
+def test_guard_rejects_terminal_action_with_non_empty_followup_question() -> None:
+    move = ActorMove(
+        move_type="terminal_action",
+        selected_route="PTS",
+        phase="READY_FOR_TERMINAL",
+        terminal_action="HANDOFF_EXPERT",
+    )
+    output = ActorWriterOutput(
+        body="Передам ситуацию специалисту для проверки без обещаний заранее.",
+        followup_question="Какая у вас машина?",
+    )
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert not validation.accepted
+    assert validation.repairable is True
+    assert "terminal_followup_question" in validation.issue_codes
+
+
+def test_guard_rejects_terminal_action_with_visible_question_mark() -> None:
+    move = ActorMove(
+        move_type="no_solution_manual_review",
+        selected_route="OTHER",
+        phase="TERMINAL",
+        terminal_action="MANUAL_REVIEW",
+    )
+    output = ActorWriterOutput(body="Передам ситуацию на ручную проверку. Сколько сейчас всего долгов?")
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert not validation.accepted
+    assert validation.repairable is True
+    assert "terminal_followup_question" in validation.issue_codes
+
+
+def test_guard_rejects_internal_workflow_terms() -> None:
+    move = ActorMove(move_type="ask_slot", selected_route="PTS", phase="COLLECTING", next_slot="car_year")
+
+    branch_validation = validate_text("В этой ветке дальше нужен один факт.", move)
+    collection_validation = validate_text("Сейчас идет сбор данных по заявке.", move)
+
+    assert not branch_validation.accepted
+    assert "internal_workflow_term" in branch_validation.issue_codes
+    assert not collection_validation.accepted
+    assert "internal_workflow_term" in collection_validation.issue_codes
+
+
+def test_guard_accepts_normal_customer_facing_words() -> None:
+    move = ActorMove(move_type="ask_slot", selected_route="PTS", phase="COLLECTING", next_slot="car_year")
+
+    validation = validate_text("Проверка условий у специалиста идет по вашему варианту долга.", move)
+
+    assert validation.accepted
+
+
 def test_guard_rejects_url_invention() -> None:
     move = ActorMove(move_type="ask_slot", selected_route="PTS", phase="COLLECTING", next_slot="car_year")
 
