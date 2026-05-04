@@ -34,13 +34,10 @@ def multi_asset_form() -> dict[str, object]:
 def test_generic_money_request_asks_funnel_question_not_collateral_slot() -> None:
     result = run_turns(start_state(multi_asset_form()), ["Хочу взять денег"])
 
-    assert result.route_session.next_slot in {
-        "need_type",
-        "total_debt",
-        "monthly_payments",
-        "desired_amount_or_total_debt",
-        "urgency",
-    }
+    assert result.route_session.selected_route == "DISCOVERY"
+    assert result.route_session.phase == "DISCOVERY"
+    assert result.route_session.next_slot == "need_type"
+    assert result.route_session.terminal_action is None
     assert result.route_session.next_slot not in {"property_type", "car_brand_model", "car_year"}
     assert "квартира, дом или другой объект" not in result.text.lower()
     assert "какая у вас машина" not in result.text.lower()
@@ -53,11 +50,11 @@ def test_cards_and_repair_does_not_trigger_mortgage_from_form_asset() -> None:
     )
 
     assert result.route_session.selected_route != "MORTGAGE_AUX"
+    assert result.route_session.selected_route == "DISCOVERY"
+    assert result.route_session.phase == "DISCOVERY"
     assert result.route_session.next_slot in {
-        "need_type",
         "total_debt",
         "monthly_payments",
-        "desired_amount_or_total_debt",
     }
     assert result.route_session.next_slot != "property_type"
     assert result.route_session.next_slot != "car_brand_model"

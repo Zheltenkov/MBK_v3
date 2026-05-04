@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .case_frame import CaseFrame
+from .constants import AUTO_AUX, DISCOVERY, MORTGAGE_AUX, MORTGAGE_MAIN, PTS
 from .intake_plans import get_intake_plan
 from .slot_resolver import resolve_primary_slots
 from .state import DialogueV3State
@@ -68,6 +69,18 @@ def build_route_session(
             reason_codes=["service_or_fallback_terminal"],
         )
 
+    if selected_route == DISCOVERY:
+        return RouteSession(
+            selected_route=selected_route,
+            phase="DISCOVERY",
+            primary_slots=plan.primary_slots,
+            closed_primary_slots=resolution.closed_primary_slots,
+            missing_primary_slots=resolution.missing_primary_slots,
+            next_slot=resolution.next_slot,
+            terminal_action=None,
+            reason_codes=["discovery_collect"] if resolution.next_slot else ["discovery_complete"],
+        )
+
     if resolution.missing_primary_slots:
         return RouteSession(
             selected_route=selected_route,
@@ -94,9 +107,9 @@ def build_route_session(
 
 def _collect_blockers(selected_route: str, frame: CaseFrame) -> list[str]:
     blockers: list[str] = []
-    if selected_route in {"MORTGAGE_MAIN", "MORTGAGE_AUX"} and frame.property_refuses_collateral:
+    if selected_route in {MORTGAGE_MAIN, MORTGAGE_AUX} and frame.property_refuses_collateral:
         blockers.append("property_collateral_refused")
-    if selected_route in {"PTS", "AUTO_AUX"} and (
+    if selected_route in {PTS, AUTO_AUX} and (
         frame.vehicle_refuses_collateral or frame.vehicle_hard_blocker
     ):
         blockers.append("vehicle_collateral_refused")

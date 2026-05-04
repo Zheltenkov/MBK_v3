@@ -29,7 +29,8 @@ def test_answer_to_opening_goal_question_does_not_start_property_type_intake() -
     )
 
     assert result.route_session.next_slot != "property_type"
-    assert result.route_session.selected_route == "BFL_RD"
+    assert result.route_session.selected_route == "DISCOVERY"
+    assert result.route_session.phase == "DISCOVERY"
     assert result.route_session.next_slot in {
         "need_type",
         "total_debt",

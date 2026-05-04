@@ -6,6 +6,21 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .case_frame import CaseFrame
+from .constants import (
+    ACTION_SCOPE_BY_ACTION_ID,
+    AUTO_AUX,
+    BFL_RD,
+    BFL_RI,
+    FRAUD_CHECK,
+    MANUAL_REVIEW,
+    MICRO,
+    MORTGAGE_AUX,
+    MORTGAGE_MAIN,
+    OTHER,
+    PTS,
+    REPEAT_VISIT,
+    UNSECURED,
+)
 from .route_session import RouteSession
 from .state import DialogueV3State
 
@@ -39,17 +54,6 @@ class ActorMove:
     style_profile: str = "calm_manager"
 
 
-ACTION_SCOPE_BY_TERMINAL_ACTION = {
-    "HANDOFF_EXPERT": "handoff_expert",
-    "HANDOFF_BFL_SPECIALIST": "bfl_handoff",
-    "MANUAL_REVIEW": "manual_review",
-    "SECURITY_FLOW": "security_check",
-    "REPEAT_HANDOFF": "repeat_handoff",
-    "SELF_SERVE_LINKS_3": "self_serve_links",
-    "SELF_SERVE_LINKS_7": "self_serve_links",
-}
-
-
 def plan_actor_move(
     route_session: RouteSession,
     *,
@@ -58,7 +62,7 @@ def plan_actor_move(
 ) -> ActorMove:
     """Plan the next actor move from deterministic route/session state."""
 
-    if route_session.selected_route == "FRAUD_CHECK":
+    if route_session.selected_route == FRAUD_CHECK:
         return ActorMove(
             move_type="security_action",
             selected_route=route_session.selected_route,
@@ -69,7 +73,7 @@ def plan_actor_move(
             must_say=["do_not_share_codes"],
         )
 
-    if route_session.selected_route == "REPEAT_VISIT":
+    if route_session.selected_route == REPEAT_VISIT:
         return ActorMove(
             move_type="repeat_action",
             selected_route=route_session.selected_route,
@@ -79,18 +83,18 @@ def plan_actor_move(
             known_facts=build_terminal_known_facts(route_session.selected_route, state),
         )
 
-    if route_session.selected_route == "OTHER" or route_session.blockers:
+    if route_session.selected_route == OTHER or route_session.blockers:
         return ActorMove(
             move_type="no_solution_manual_review",
             selected_route=route_session.selected_route,
             phase=route_session.phase,
-            terminal_action=route_session.terminal_action or "MANUAL_REVIEW",
+            terminal_action=route_session.terminal_action or MANUAL_REVIEW,
             client_concern=_client_concern(frame),
             known_facts=_with_session_reasons(
                 build_terminal_known_facts(route_session.selected_route, state),
                 route_session,
             ),
-            action_scope=terminal_action_scope(route_session.terminal_action or "MANUAL_REVIEW"),
+            action_scope=terminal_action_scope(route_session.terminal_action or MANUAL_REVIEW),
         )
 
     if frame.off_topic_kind and route_session.next_slot:
@@ -148,8 +152,8 @@ def plan_actor_move(
         move_type="no_solution_manual_review",
         selected_route=route_session.selected_route,
         phase=route_session.phase,
-        terminal_action="MANUAL_REVIEW",
-        action_scope=terminal_action_scope("MANUAL_REVIEW"),
+        terminal_action=MANUAL_REVIEW,
+        action_scope=terminal_action_scope(MANUAL_REVIEW),
     )
 
 
@@ -168,7 +172,7 @@ def terminal_action_scope(terminal_action: str | None) -> str | None:
 
     if not terminal_action:
         return None
-    return ACTION_SCOPE_BY_TERMINAL_ACTION.get(terminal_action)
+    return ACTION_SCOPE_BY_ACTION_ID.get(terminal_action)
 
 
 def build_terminal_known_facts(
@@ -180,7 +184,7 @@ def build_terminal_known_facts(
     if state is None:
         return {}
 
-    if route in {"PTS", "AUTO_AUX"}:
+    if route in {PTS, AUTO_AUX}:
         return _known(
             state,
             {
@@ -193,7 +197,7 @@ def build_terminal_known_facts(
                 "car_arrest_or_restriction": "car_arrest_or_restriction",
             },
         )
-    if route in {"MORTGAGE_MAIN", "MORTGAGE_AUX"}:
+    if route in {MORTGAGE_MAIN, MORTGAGE_AUX}:
         return _known(
             state,
             {
@@ -205,7 +209,7 @@ def build_terminal_known_facts(
                 "property_encumbrance_type": "property_encumbrance_type",
             },
         )
-    if route in {"BFL_RD", "BFL_RI"}:
+    if route in {BFL_RD, BFL_RI}:
         return _known(
             state,
             {
@@ -219,7 +223,7 @@ def build_terminal_known_facts(
                 "client_wants_to_pay": "client_wants_to_pay",
             },
         )
-    if route in {"UNSECURED", "MICRO"}:
+    if route in {UNSECURED, MICRO}:
         return _known(
             state,
             {
@@ -232,9 +236,9 @@ def build_terminal_known_facts(
                 "urgency": "urgency",
             },
         )
-    if route == "FRAUD_CHECK":
+    if route == FRAUD_CHECK:
         return _known(state, {"service_signal": "service_reason"})
-    if route == "REPEAT_VISIT":
+    if route == REPEAT_VISIT:
         return _known(state, {"service_signal": "repeat_reason"})
     return {}
 

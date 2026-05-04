@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 from .case_frame import CaseFrame
+from .constants import (
+    BFL_RD,
+    BFL_RI,
+    DISCOVERY,
+    FRAUD_CHECK,
+    MICRO,
+    MORTGAGE_AUX,
+    MORTGAGE_MAIN,
+    OTHER,
+    PTS,
+    REPEAT_VISIT,
+    UNSECURED,
+)
 from .state import DialogueV3State
-
-MORTGAGE_MAIN = "MORTGAGE_MAIN"
-MORTGAGE_AUX = "MORTGAGE_AUX"
-PTS = "PTS"
-AUTO_AUX = "AUTO_AUX"
-UNSECURED = "UNSECURED"
-MICRO = "MICRO"
-BFL_RI = "BFL_RI"
-BFL_RD = "BFL_RD"
-OTHER = "OTHER"
-FRAUD_CHECK = "FRAUD_CHECK"
-REPEAT_VISIT = "REPEAT_VISIT"
 
 
 def select_route(frame: CaseFrame, state: DialogueV3State) -> str:
@@ -31,10 +32,10 @@ def select_route(frame: CaseFrame, state: DialogueV3State) -> str:
     if _hard_conflicting_constraints(frame, state):
         return OTHER
 
-    if _explicit_vehicle_intent(frame, state) and _pts_possible(frame, state):
+    if _explicit_vehicle_intent(frame) and _pts_possible(frame, state):
         return PTS
 
-    if _explicit_property_collateral_intent(frame, state) and not _mortgage_blocked(frame, state):
+    if _explicit_property_collateral_intent(frame) and not _mortgage_blocked(frame, state):
         return _mortgage_route(frame)
 
     if _severe_debt_pressure(frame):
@@ -91,59 +92,39 @@ def _pts_possible(frame: CaseFrame, state: DialogueV3State) -> bool:
 def _early_funnel_route(frame: CaseFrame, state: DialogueV3State) -> str | None:
     """Keep early generic turns in a safe funnel instead of form-asset collateral intake."""
 
-    if state.turn_index > 3:
+    if state.turn_index > 3 and _previous_selected_route(state) != DISCOVERY:
         return None
-    if _explicit_vehicle_intent(frame, state) or _explicit_property_collateral_intent(frame, state):
+    if _explicit_vehicle_intent(frame) or _explicit_property_collateral_intent(frame):
         return None
-    if not _general_funnel_intent(frame, state):
+    if not _general_funnel_intent(frame):
         return None
 
-    if frame.has_current_loans or frame.need_type in {"debt_solution", "payment_reduction"}:
-        return BFL_RD
-    if frame.early_need_signal in {"debt_solution", "payment_reduction", "repair_or_purpose"}:
-        return BFL_RD
-    if frame.desired_amount is not None or frame.early_need_signal == "new_money":
-        return UNSECURED
-    return BFL_RD
+    return DISCOVERY
 
 
-def _explicit_vehicle_intent(frame: CaseFrame, state: DialogueV3State) -> bool:
-    if frame.explicit_pts_intent:
+def _previous_selected_route(state: DialogueV3State) -> str | None:
+    route = state.route
+    return getattr(route, "selected_route", None) if route is not None else None
+
+
+def _explicit_vehicle_intent(frame: CaseFrame) -> bool:
+    return frame.explicit_pts_intent or frame.early_need_signal == "explicit_pts"
+
+
+def _explicit_property_collateral_intent(frame: CaseFrame) -> bool:
+    return frame.explicit_mortgage_intent or frame.early_need_signal == "explicit_mortgage"
+
+
+def _general_funnel_intent(frame: CaseFrame) -> bool:
+    if frame.has_current_loans and (
+        frame.client_wants_to_pay
+        or frame.client_fears_bankruptcy
+        or frame.high_payment_load
+        or frame.has_arrears
+        or frame.total_debt is not None
+        or frame.monthly_payments is not None
+    ):
         return True
-    text = _last_user_text(state)
-    return _contains_any(
-        text,
-        (
-            "машин",
-            "авто",
-            "птс",
-            "под авто",
-            "под птс",
-            "машину отдавать не буду",
-            "машина нужна",
-            "она для работы",
-        ),
-    )
-
-
-def _explicit_property_collateral_intent(frame: CaseFrame, state: DialogueV3State) -> bool:
-    if frame.explicit_mortgage_intent:
-        return True
-    text = _last_user_text(state)
-    return _contains_any(
-        text,
-        (
-            "под залог недвижимости",
-            "залог недвижимости",
-            "под недвижимость",
-            "под квартиру",
-            "под дом",
-            "под жилье",
-        ),
-    )
-
-
-def _general_funnel_intent(frame: CaseFrame, state: DialogueV3State) -> bool:
     if frame.early_need_signal in {
         "new_money",
         "debt_solution",
@@ -153,46 +134,7 @@ def _general_funnel_intent(frame: CaseFrame, state: DialogueV3State) -> bool:
         return True
     if frame.need_type in {"new_money", "debt_solution", "payment_reduction"}:
         return True
-    text = _last_user_text(state)
-    return _contains_any(
-        text,
-        (
-            "закрыть карты",
-            "закрыть карту",
-            "закрыть кредиты",
-            "закрыть долги",
-            "снизить платеж",
-            "платеж меньше",
-            "нужны деньги",
-            "деньги нужны",
-            "нужна сумма",
-            "получить сумму",
-            "сумму на руки",
-            "на ремонт",
-            "ремонт",
-            "хочу взять денег",
-            "платежи тяжело",
-        ),
-    )
-
-
-def _last_user_text(state: DialogueV3State) -> str:
-    value = state.fact_value("last_user_text", "")
-    return str(value or "").lower().replace("ё", "е")
-
-
-def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
-    return any(pattern in text for pattern in patterns)
-
-
-def _form_fact_is_true(state: DialogueV3State, key: str) -> bool:
-    fact = state.facts.get(key)
-    return bool(fact and fact.source == "form" and fact.value is True)
-
-
-def _form_fact_known(state: DialogueV3State, key: str) -> bool:
-    fact = state.facts.get(key)
-    return bool(fact and fact.source == "form" and fact.value not in (None, "", False))
+    return False
 
 
 def _fact_is_not_from_form(state: DialogueV3State, key: str) -> bool:
@@ -210,26 +152,42 @@ def _has_non_form_vehicle_evidence(state: DialogueV3State) -> bool:
 def _severe_debt_pressure(frame: CaseFrame) -> bool:
     arrears_severe = frame.arrears_months is not None and frame.arrears_months >= 2
     no_stable_income = frame.income_status in {"none", "unstable"}
+    debt_pressure_marker = bool(frame.has_mfo or frame.collector_pressure)
     return bool(
-        (frame.has_mfo and frame.collector_pressure)
-        or (frame.has_mfo and arrears_severe)
-        or (arrears_severe and no_stable_income)
-        or (no_stable_income and frame.high_payment_load and frame.has_arrears)
+        debt_pressure_marker
+        and no_stable_income
+        and (
+            arrears_severe
+            or frame.collector_pressure
+            or (frame.has_mfo and frame.has_arrears)
+            or (frame.high_payment_load and frame.has_arrears)
+        )
     )
 
 
 def _restructuring_debt_pressure(frame: CaseFrame) -> bool:
     if frame.client_refuses_debt_procedure:
         return False
-    return bool(
-        frame.client_wants_to_pay
+    if _severe_debt_pressure(frame):
+        return False
+    debt_intent = (
+        frame.need_type in {"debt_solution", "payment_reduction"}
+        or frame.early_need_signal in {
+            "debt_solution",
+            "payment_reduction",
+        }
+        or frame.has_current_loans
         or frame.high_payment_load
         or frame.payment_gap_large
-        or (
-            frame.has_current_loans
-            and frame.total_debt is not None
-            and frame.monthly_payments is not None
-        )
+    )
+    debt_numbers_known = frame.total_debt is not None and frame.monthly_payments is not None
+    income_known = frame.income_status != "unknown" or frame.official_income is not None or frame.other_income is not None
+    payment_resolution_signal = frame.comfortable_payment is not None or frame.client_wants_to_pay
+    return bool(
+        debt_intent
+        and debt_numbers_known
+        and income_known
+        and payment_resolution_signal
     )
 
 

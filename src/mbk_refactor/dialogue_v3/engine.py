@@ -125,6 +125,8 @@ class DialogueV3Engine:
             writer_mode=self.writer_mode,
         )
         current_state.trace_history.append(trace.to_dict())
+        if route_session.next_slot:
+            current_state.asked_slots.append(route_session.next_slot)
         current_state.add_assistant_message(writer_output.text)
 
         return DialogueV3TurnResult(

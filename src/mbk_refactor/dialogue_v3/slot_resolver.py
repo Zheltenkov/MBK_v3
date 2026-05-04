@@ -90,7 +90,7 @@ def _fact_known(state: DialogueV3State, key: str) -> bool:
 
 
 def _need_type_known(frame: CaseFrame) -> bool:
-    if frame.need_type != "unknown":
+    if frame.need_type in {"debt_solution", "payment_reduction", "security"}:
         return True
     return bool(
         frame.total_debt is not None

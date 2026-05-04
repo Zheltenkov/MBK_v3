@@ -182,7 +182,8 @@ def test_assistant_collects_debt_child_fact_after_root_credit_signal() -> None:
 
     result = DialogueV3Engine().handle_turn("Банкротство не хочу, хочу платить.", state)
 
-    assert result.route_session.selected_route == "BFL_RD"
+    assert result.route_session.selected_route == "DISCOVERY"
+    assert result.route_session.phase == "DISCOVERY"
     assert result.route_session.next_slot == "total_debt"
     assert state.fact_value("total_debt") is None
     assert state.fact_value("monthly_payments") is None
@@ -196,7 +197,7 @@ def test_root_asset_signal_does_not_force_mortgage_child_intake_for_generic_mone
 
     result = DialogueV3Engine().handle_turn("Нужны деньги.", state)
 
-    assert result.route_session.selected_route != "MORTGAGE_AUX"
+    assert result.route_session.selected_route == "DISCOVERY"
     assert result.route_session.next_slot != "property_type"
     assert state.fact_value("property_type") is None
     assert state.fact_value("property_region") is None

@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 
 from .actions import ActionEvent
+from .constants import AUTO_AUX, BFL_RD, BFL_RI
 from .moves import ActorMove
 from .safe_fallback import ActorWriterOutput
 
@@ -19,9 +20,9 @@ INTERNAL_WORDS = [
     "terminal",
     "action_id",
     "manual_review",
-    "BFL_RI",
-    "BFL_RD",
-    "AUTO_AUX",
+    BFL_RI,
+    BFL_RD,
+    AUTO_AUX,
     "слот",
     "роутинг",
     "сценарий",

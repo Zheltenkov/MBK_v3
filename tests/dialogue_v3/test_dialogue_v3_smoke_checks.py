@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+from mbk_refactor.dialogue_v3.ui_form_schema import public_form_to_facts
+
 
 def load_smoke_module() -> ModuleType:
     root = Path(__file__).resolve().parents[2]
@@ -62,3 +64,29 @@ def test_smoke_does_not_flag_canonical_short_slot_question_copy() -> None:
     violations = smoke._turn_violations(turn_payload, scenario)
 
     assert "few_shot_body_copy" not in violations
+
+
+def test_smoke_form_alias_adapter_uses_public_form_parser() -> None:
+    smoke = load_smoke_module()
+    payload = {
+        "Сумма": "645467 ₽",
+        "Есть авто": "да",
+        "Есть недвижимость": "да",
+        "Есть текущие кредиты": "да",
+        "Регион недвижимости": "Москва",
+        "Доход": "125 тыс",
+    }
+
+    root_payload, extra_facts = smoke.smoke_public_form_to_root_payload(payload)
+    normalized = smoke._normalize_public_form(payload)
+    expected = {"public_form": payload}
+    expected.update(public_form_to_facts(root_payload))
+    expected.update(extra_facts)
+
+    assert normalized == expected
+    assert normalized["desired_amount"] == 645_467
+    assert normalized["has_car"] is True
+    assert normalized["has_property"] is True
+    assert normalized["has_current_loans"] is True
+    assert normalized["property_region"] == "Москва"
+    assert normalized["official_income"] == 125_000

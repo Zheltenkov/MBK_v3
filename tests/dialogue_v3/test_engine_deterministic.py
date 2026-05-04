@@ -83,6 +83,16 @@ def test_engine_non_terminal_response_has_no_handoff_language() -> None:
     assert_no_handoff_language(result.text)
 
 
+def test_engine_records_asked_slot_after_each_assistant_question() -> None:
+    engine = DialogueV3Engine()
+    first = engine.handle_turn("Хочу взять денег")
+    second = engine.handle_turn("Хочу закрыть долги, платежи тяжело тянуть", first.state)
+
+    assert first.state.asked_slots[0] == "need_type"
+    assert second.state.asked_slots[-1] == "total_debt"
+    assert [message.role for message in second.state.messages][-2:] == ["user", "assistant"]
+
+
 def test_engine_fraud_sms_code_bypasses_intake_with_event() -> None:
     result = DialogueV3Engine().handle_turn("Мне позвонили от вашего имени и попросили код из СМС.")
 

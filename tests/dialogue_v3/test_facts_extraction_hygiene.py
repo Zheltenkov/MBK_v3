@@ -4,6 +4,8 @@ import pytest
 
 from mbk_refactor.dialogue_v3.engine import DialogueV3Engine
 from mbk_refactor.dialogue_v3.facts import extract_turn, get_last_asked_slot
+from mbk_refactor.dialogue_v3.case_frame import build_case_frame
+from mbk_refactor.dialogue_v3.slot_resolver import is_slot_closed
 from mbk_refactor.dialogue_v3.state import DialogueV3State
 
 
@@ -130,6 +132,14 @@ def test_vehicle_retention_with_vehicle_context_is_pts_signal() -> None:
     assert extracted.facts["vehicle_refuses_collateral"] is False
 
 
+def test_vehicle_availability_phrase_sets_pts_signal_for_routes() -> None:
+    extracted = extract_turn("Нужны деньги, авто есть")
+
+    assert extracted.facts["has_car"] is True
+    assert extracted.facts["explicit_pts_intent"] is True
+    assert extracted.facts["early_need_signal"] == "explicit_pts"
+
+
 def test_vehicle_retention_pronoun_uses_existing_car_context() -> None:
     state = DialogueV3State(session_id="vehicle-context")
     state.merge_facts({"has_car": True}, source="form")
@@ -222,6 +232,16 @@ def test_short_amounts_use_asked_slot_context(
     assert extracted.facts[fact_key] == expected
 
 
+def test_month_duration_does_not_fill_contextual_payment_amount() -> None:
+    state = DialogueV3State(session_id="month-duration")
+    state.asked_slots.append("monthly_payments")
+
+    extracted = extract_turn("Дохода стабильного нет, просрочка 3 месяца", state=state)
+
+    assert "monthly_payments" not in extracted.facts
+    assert extracted.facts["arrears_months"] == 3.0
+
+
 def test_standalone_amount_without_context_is_not_total_debt() -> None:
     extracted = extract_turn("1.7 млн")
 
@@ -263,3 +283,15 @@ def test_no_stable_income_and_arrears_months_do_not_create_income_amount() -> No
     assert extracted.facts["arrears_months"] == 3.0
     assert extracted.facts["collector_pressure"] is True
     assert "official_income" not in extracted.facts
+
+
+def test_conflicting_fact_is_not_treated_as_closed_slot() -> None:
+    state = DialogueV3State(session_id="conflict")
+    state.turn_index = 1
+    state.merge_facts({"total_debt": 1_000_000})
+    state.turn_index = 2
+    state.merge_facts({"total_debt": 2_000_000})
+
+    assert state.facts["total_debt"].quality == "conflicting"
+    assert state.fact_value("total_debt") is None
+    assert is_slot_closed("total_debt", state=state, frame=build_case_frame(state)) is False

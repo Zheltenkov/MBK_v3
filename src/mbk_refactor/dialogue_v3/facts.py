@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from .constants import PTS
+
 if TYPE_CHECKING:
     from .state import DialogueV3State
 
@@ -127,6 +129,12 @@ MORTGAGE_REJECTION_PATTERNS = (
     "недвижимость не должна участвовать",
 )
 VEHICLE_WORD_PATTERNS = ("авто", "машин", "птс", "kia", "hyundai", "лада", "ваз", "toyota")
+VEHICLE_AVAILABILITY_PATTERNS = (
+    "авто есть",
+    "есть авто",
+    "машина есть",
+    "есть машина",
+)
 VEHICLE_RETENTION_PATTERNS = (
     "машину отдавать не буду",
     "авто отдавать не буду",
@@ -376,7 +384,7 @@ def extract_collateral_signals(
     _extract_vehicle_facts(text, facts, concerns, state)
 
     if _contains_any(text, VEHICLE_COLLATERAL_REFUSAL_PATTERNS):
-        facts["route_rejection"] = "PTS"
+        facts["route_rejection"] = PTS
         facts["vehicle_refuses_collateral"] = True
     if _contains_any(text, MORTGAGE_REJECTION_PATTERNS):
         facts["route_rejection"] = "MORTGAGE"
@@ -527,6 +535,9 @@ def _extract_vehicle_facts(
     vehicle_context = _has_vehicle_context(text, facts, state)
     if vehicle_context:
         facts["has_car"] = True
+    if _contains_any(text, VEHICLE_AVAILABILITY_PATTERNS):
+        facts["explicit_pts_intent"] = True
+        _set_need_signal(facts, "explicit_pts")
 
     raw_car_match = RAW_CAR_PATTERN.search(text)
     if raw_car_match:
@@ -638,13 +649,13 @@ def _has_vehicle_context(
     if state is None:
         return False
     route = getattr(state, "route", None)
-    if getattr(route, "selected_route", None) == "PTS":
+    if getattr(route, "selected_route", None) == PTS:
         return True
     if getattr(route, "next_slot", None) in {"car_brand_model", "car_year", "car_owner", "car_pledge_or_restrictions"}:
         return True
     if state.trace_history:
         last_trace = state.trace_history[-1]
-        if last_trace.get("selected_route") == "PTS":
+        if last_trace.get("selected_route") == PTS:
             return True
         if last_trace.get("next_slot") in {
             "car_brand_model",
@@ -715,10 +726,15 @@ def _find_amount_near(text: str, keywords: tuple[str, ...]) -> int | None:
 
 
 def _first_contextual_amount(text: str) -> int | None:
-    match = AMOUNT_PATTERN.search(text)
-    if not match:
-        return None
-    return _parse_amount(match.group(1), match.group(2))
+    for match in AMOUNT_PATTERN.finditer(text):
+        if match.group(2) is None and _is_month_duration_after(text, match.end()):
+            continue
+        return _parse_amount(match.group(1), match.group(2))
+    return None
+
+
+def _is_month_duration_after(text: str, position: int) -> bool:
+    return re.match(r"\s*(месяц|месяца|месяцев)\b", text[position:]) is not None
 
 
 def _looks_like_standalone_total_debt(text: str) -> bool:

@@ -24,10 +24,28 @@ if str(SRC_DIR) not in sys.path:
 
 from mbk_refactor.dialogue_v3 import ActorWriter  # noqa: E402
 from mbk_refactor.dialogue_v3.actor_prompts import FEW_SHOT_EXAMPLES  # noqa: E402
+from mbk_refactor.dialogue_v3.constants import (  # noqa: E402
+    BFL_RD,
+    BFL_RI,
+    DISCOVERY,
+    FRAUD_CHECK,
+    HANDOFF_BFL_SPECIALIST,
+    HANDOFF_EXPERT,
+    MANUAL_REVIEW,
+    MORTGAGE_AUX,
+    MORTGAGE_MAIN,
+    OTHER,
+    PTS,
+    REPEAT_HANDOFF,
+    REPEAT_VISIT,
+    SECURITY_FLOW,
+    SELF_SERVE_LINKS_3,
+)
 from mbk_refactor.dialogue_v3.engine import DialogueV3Engine, DialogueV3TurnResult  # noqa: E402
 from mbk_refactor.dialogue_v3.llm_client import build_optional_llm_client  # noqa: E402
 from mbk_refactor.dialogue_v3.response_guard import HANDOFF_LANGUAGE  # noqa: E402
 from mbk_refactor.dialogue_v3.state import DialogueV3State  # noqa: E402
+from mbk_refactor.dialogue_v3.ui_form_schema import public_form_to_facts  # noqa: E402
 
 WriterMode = Literal["deterministic", "llm", "llm_guarded"]
 
@@ -52,7 +70,7 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Есть авто": "да",
         },
         turns=["Хочу закрыть карты, но машину отдавать не буду, она для работы."],
-        expected_route="PTS",
+        expected_route=PTS,
     ),
     SmokeScenario(
         scenario_id="pts_003_terse_family",
@@ -62,8 +80,8 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Есть текущие кредиты": "да",
         },
         turns=["Лада Веста 2018, я собственник, не в залоге и ограничений нет."],
-        expected_route="PTS",
-        expected_terminal_action="HANDOFF_EXPERT",
+        expected_route=PTS,
+        expected_terminal_action=HANDOFF_EXPERT,
     ),
     SmokeScenario(
         scenario_id="mortgage_main_001_calm_family",
@@ -73,8 +91,8 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Регион недвижимости": "Москва",
         },
         turns=["Квартира в Москве, я собственник, без обременений."],
-        expected_route="MORTGAGE_MAIN",
-        expected_terminal_action="HANDOFF_EXPERT",
+        expected_route=MORTGAGE_MAIN,
+        expected_terminal_action=HANDOFF_EXPERT,
     ),
     SmokeScenario(
         scenario_id="mortgage_main_003_anxious_homeowner",
@@ -83,7 +101,7 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Есть недвижимость": "да",
         },
         turns=["Квартира есть, но я боюсь потерять жилье."],
-        expected_route="MORTGAGE_AUX",
+        expected_route=MORTGAGE_AUX,
     ),
     SmokeScenario(
         scenario_id="mortgage_main_005_region_not_supported",
@@ -93,8 +111,8 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Регион недвижимости": "Новосибирск",
         },
         turns=["Дом, я собственник, без обременений."],
-        expected_route="MORTGAGE_AUX",
-        expected_terminal_action="SELF_SERVE_LINKS_3",
+        expected_route=MORTGAGE_AUX,
+        expected_terminal_action=SELF_SERVE_LINKS_3,
     ),
     SmokeScenario(
         scenario_id="bfl_rd_001_stable_income",
@@ -102,14 +120,14 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
         turns=[
             "Долг 1.7 млн, плачу 78 тыс, доход 125 тыс, комфортно 35 тыс, просрочка 1 месяц. Банкротство не хочу, хочу платить."
         ],
-        expected_route="BFL_RD",
-        expected_terminal_action="HANDOFF_BFL_SPECIALIST",
+        expected_route=BFL_RD,
+        expected_terminal_action=HANDOFF_BFL_SPECIALIST,
     ),
     SmokeScenario(
         scenario_id="bfl_ri_001_mfo_pressure",
         public_form={"Есть текущие кредиты": "да"},
         turns=["МФО, коллекторы, просрочка 3 месяца, долги 2 млн, дохода стабильного нет."],
-        expected_route="BFL_RI",
+        expected_route=BFL_RI,
     ),
     SmokeScenario(
         scenario_id="other_003_conflicting_constraints",
@@ -119,22 +137,22 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Есть недвижимость": "нет",
         },
         turns=["Суды не рассматриваю, никаких процедур, залог не хочу, дохода нет."],
-        expected_route="OTHER",
-        expected_terminal_action="MANUAL_REVIEW",
+        expected_route=OTHER,
+        expected_terminal_action=MANUAL_REVIEW,
     ),
     SmokeScenario(
         scenario_id="fraud_check_001_sms_code",
         public_form={},
         turns=["Мне позвонили от вашего имени и попросили код из СМС."],
-        expected_route="FRAUD_CHECK",
-        expected_terminal_action="SECURITY_FLOW",
+        expected_route=FRAUD_CHECK,
+        expected_terminal_action=SECURITY_FLOW,
     ),
     SmokeScenario(
         scenario_id="repeat_visit_002_no_answer_from_manager",
         public_form={},
         turns=["Я уже переходил в чат, но мне не ответили."],
-        expected_route="REPEAT_VISIT",
-        expected_terminal_action="REPEAT_HANDOFF",
+        expected_route=REPEAT_VISIT,
+        expected_terminal_action=REPEAT_HANDOFF,
     ),
     SmokeScenario(
         scenario_id="offtopic_001_python",
@@ -143,7 +161,7 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Долги 1 млн, плачу 50 тыс в месяц.",
             "Напиши функцию сортировки пузырьком на Python.",
         ],
-        expected_route="BFL_RD",
+        expected_route=DISCOVERY,
     ),
     SmokeScenario(
         scenario_id="generic_money_to_debt_funnel",
@@ -154,7 +172,7 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Есть недвижимость": "да",
         },
         turns=["Хочу взять денег"],
-        expected_route="BFL_RD",
+        expected_route=DISCOVERY,
     ),
     SmokeScenario(
         scenario_id="cards_repair_ambiguous_no_mortgage",
@@ -165,7 +183,7 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Есть недвижимость": "да",
         },
         turns=["Хочу закрыть карты и немного оставить на ремонт"],
-        expected_route="BFL_RD",
+        expected_route=DISCOVERY,
     ),
     SmokeScenario(
         scenario_id="bfl_rd_multiturn_wants_to_pay",
@@ -179,8 +197,8 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "35 тысяч было бы нормально",
             "Просрочка около месяца. Банкротство не хочу, хочу платить",
         ],
-        expected_route="BFL_RD",
-        expected_terminal_action="HANDOFF_BFL_SPECIALIST",
+        expected_route=BFL_RD,
+        expected_terminal_action=HANDOFF_BFL_SPECIALIST,
     ),
     SmokeScenario(
         scenario_id="bfl_ri_multiturn_mfo_collectors",
@@ -190,8 +208,8 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Около 2 млн, много МФО",
             "Дохода стабильного нет, просрочка 3 месяца, коллекторы звонят",
         ],
-        expected_route="BFL_RI",
-        expected_terminal_action="HANDOFF_BFL_SPECIALIST",
+        expected_route=BFL_RI,
+        expected_terminal_action=HANDOFF_BFL_SPECIALIST,
     ),
     SmokeScenario(
         scenario_id="explicit_pts_retention",
@@ -201,20 +219,20 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
             "Есть недвижимость": "да",
         },
         turns=["Хочу закрыть долги, но машину отдавать не буду, она каждый день нужна"],
-        expected_route="PTS",
+        expected_route=PTS,
     ),
     SmokeScenario(
         scenario_id="explicit_mortgage",
         public_form={"Сумма": "2000000", "Есть недвижимость": "да"},
         turns=["Хочу рассмотреть под квартиру"],
-        expected_route="MORTGAGE_AUX",
+        expected_route=MORTGAGE_AUX,
     ),
     SmokeScenario(
         scenario_id="fraud_sms_code",
         public_form={"Сумма": "600000", "Есть недвижимость": "да"},
         turns=["Мне позвонили от вашего имени и попросили код из СМС"],
-        expected_route="FRAUD_CHECK",
-        expected_terminal_action="SECURITY_FLOW",
+        expected_route=FRAUD_CHECK,
+        expected_terminal_action=SECURITY_FLOW,
     ),
 ]
 
@@ -372,7 +390,7 @@ def _turn_violations(turn_payload: dict[str, Any], scenario: SmokeScenario) -> l
         violations.append("few_shot_body_copy")
 
     selected_route = turn_payload.get("selected_route")
-    if scenario.expected_route != "OTHER" and selected_route == "OTHER":
+    if scenario.expected_route != OTHER and selected_route == OTHER:
         violations.append("early_other")
 
     return violations
@@ -484,62 +502,64 @@ def _turn_result_to_payload(result: DialogueV3TurnResult, *, writer_mode: Writer
 
 
 def _normalize_public_form(payload: dict[str, Any]) -> dict[str, Any]:
+    root_payload, extra_facts = smoke_public_form_to_root_payload(payload)
     facts: dict[str, Any] = {"public_form": payload}
-    for raw_key, raw_value in payload.items():
-        key = str(raw_key).strip().lower()
-        value = str(raw_value).strip()
-        normalized_value = value.lower().replace("ё", "е")
-
-        if key in {"сумма", "desired_amount", "amount"}:
-            amount = _parse_amount(value)
-            if amount is not None:
-                facts["desired_amount"] = amount
-        elif key in {"есть авто", "has_car"}:
-            facts["has_car"] = _parse_bool(normalized_value)
-        elif key in {"есть недвижимость", "has_property"}:
-            facts["has_property"] = _parse_bool(normalized_value)
-        elif key in {"есть текущие кредиты", "has_current_loans"}:
-            facts["has_current_loans"] = _parse_bool(normalized_value)
-        elif key in {"регион недвижимости", "property_region"}:
-            facts["property_region"] = value
-        elif key in {"тип недвижимости", "property_type"}:
-            facts["property_type"] = value
-        elif key in {"доход", "official_income"}:
-            amount = _parse_amount(value)
-            if amount is not None:
-                facts["official_income"] = amount
-                facts["income_status"] = "stable"
+    facts.update(public_form_to_facts(root_payload))
+    facts.update(extra_facts)
     return facts
 
 
-def _parse_bool(value: str) -> bool | None:
-    if value in {"да", "yes", "true", "1", "есть"}:
-        return True
-    if value in {"нет", "no", "false", "0", "нету"}:
-        return False
-    return None
+def smoke_public_form_to_root_payload(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Map legacy smoke labels to public root form fields before parsing."""
+
+    root_payload: dict[str, Any] = {}
+    extra_facts: dict[str, Any] = {}
+    for raw_key, raw_value in payload.items():
+        key = str(raw_key).strip().lower()
+        value = str(raw_value).strip()
+
+        if key in {"сумма", "desired_amount", "amount"}:
+            root_payload["Сумма"] = raw_value
+        elif key in {"фио", "full_name"}:
+            root_payload["ФИО"] = raw_value
+        elif key in {"телефон", "phone"}:
+            root_payload["Телефон"] = raw_value
+        elif key in {"есть авто", "has_car"}:
+            root_payload["Есть ли в собственности авто?"] = raw_value
+        elif key in {"есть недвижимость", "has_property"}:
+            has_property = _bool_from_form_value(raw_value)
+            if has_property is True:
+                root_payload["Тип актива"] = "Недвижимость"
+            elif has_property is False:
+                root_payload["Тип актива"] = "Нет активов"
+        elif key in {"есть текущие кредиты", "has_current_loans"}:
+            root_payload["Есть текущие кредиты или займы?"] = raw_value
+        elif key in {"регион недвижимости", "property_region"}:
+            extra_facts["property_region"] = value
+        elif key in {"тип недвижимости", "property_type"}:
+            extra_facts["property_type"] = value
+        elif key in {"доход", "official_income"}:
+            amount = _amount_from_form_value(raw_value)
+            if amount is not None:
+                extra_facts["official_income"] = amount
+                extra_facts["income_status"] = "stable"
+        else:
+            root_payload[raw_key] = raw_value
+    return root_payload, extra_facts
 
 
-def _parse_amount(value: str) -> int | None:
-    cleaned = (
-        value.lower()
-        .replace("рублей", "")
-        .replace("руб", "")
-        .replace("₽", "")
-        .replace(" ", "")
-    )
-    multiplier = 1
-    if "млн" in cleaned:
-        multiplier = 1_000_000
-        cleaned = cleaned.replace("млн", "")
-    elif "тыс" in cleaned:
-        multiplier = 1_000
-        cleaned = cleaned.replace("тыс", "")
-    cleaned = cleaned.replace(",", ".")
-    try:
-        return int(float(cleaned) * multiplier)
-    except ValueError:
-        return None
+def _bool_from_form_value(value: Any) -> bool | None:
+    facts = public_form_to_facts({"Есть ли в собственности авто?": value})
+    fact_value = facts.get("has_car")
+    return fact_value if isinstance(fact_value, bool) else None
+
+
+def _amount_from_form_value(value: Any) -> int | None:
+    facts = public_form_to_facts({"Сумма": value})
+    amount = facts.get("desired_amount")
+    return amount if isinstance(amount, int) else None
 
 
 def _to_plain(value: Any) -> Any:

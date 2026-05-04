@@ -72,6 +72,6 @@ class DialogueV3State:
         """Return the raw fact value when it is known and usable."""
 
         fact = self.facts.get(key)
-        if fact is None or fact.quality in {"unknown", "not_applicable"}:
+        if fact is None or fact.quality in {"unknown", "not_applicable", "conflicting"}:
             return default
         return fact.value
