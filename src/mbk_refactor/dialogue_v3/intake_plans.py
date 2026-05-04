@@ -60,6 +60,7 @@ INTAKE_PLANS: dict[str, IntakePlan] = {
     "BFL_RD": IntakePlan(
         route="BFL_RD",
         primary_slots=[
+            "need_type",
             "total_debt",
             "monthly_payments",
             "income_status",
@@ -73,7 +74,6 @@ INTAKE_PLANS: dict[str, IntakePlan] = {
         route="BFL_RI",
         primary_slots=[
             "total_debt",
-            "monthly_payments",
             "income_status",
             "delinquency_context",
             "loan_types",

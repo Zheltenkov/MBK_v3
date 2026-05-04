@@ -145,6 +145,77 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
         ],
         expected_route="BFL_RD",
     ),
+    SmokeScenario(
+        scenario_id="generic_money_to_debt_funnel",
+        public_form={
+            "Сумма": "645467",
+            "Есть текущие кредиты": "да",
+            "Есть авто": "да",
+            "Есть недвижимость": "да",
+        },
+        turns=["Хочу взять денег"],
+        expected_route="BFL_RD",
+    ),
+    SmokeScenario(
+        scenario_id="cards_repair_ambiguous_no_mortgage",
+        public_form={
+            "Сумма": "645467",
+            "Есть текущие кредиты": "да",
+            "Есть авто": "да",
+            "Есть недвижимость": "да",
+        },
+        turns=["Хочу закрыть карты и немного оставить на ремонт"],
+        expected_route="BFL_RD",
+    ),
+    SmokeScenario(
+        scenario_id="bfl_rd_multiturn_wants_to_pay",
+        public_form={"Есть текущие кредиты": "да"},
+        turns=[
+            "Хочу взять денег",
+            "Хочу закрыть долги, платежи тяжело тянуть",
+            "Около 1.7 млн",
+            "78 тысяч в месяц",
+            "Доход 125 тысяч, работаю официально",
+            "35 тысяч было бы нормально",
+            "Просрочка около месяца. Банкротство не хочу, хочу платить",
+        ],
+        expected_route="BFL_RD",
+        expected_terminal_action="HANDOFF_BFL_SPECIALIST",
+    ),
+    SmokeScenario(
+        scenario_id="bfl_ri_multiturn_mfo_collectors",
+        public_form={"Есть текущие кредиты": "да"},
+        turns=[
+            "Хочу закрыть долги",
+            "Около 2 млн, много МФО",
+            "Дохода стабильного нет, просрочка 3 месяца, коллекторы звонят",
+        ],
+        expected_route="BFL_RI",
+        expected_terminal_action="HANDOFF_BFL_SPECIALIST",
+    ),
+    SmokeScenario(
+        scenario_id="explicit_pts_retention",
+        public_form={
+            "Есть текущие кредиты": "да",
+            "Есть авто": "да",
+            "Есть недвижимость": "да",
+        },
+        turns=["Хочу закрыть долги, но машину отдавать не буду, она каждый день нужна"],
+        expected_route="PTS",
+    ),
+    SmokeScenario(
+        scenario_id="explicit_mortgage",
+        public_form={"Сумма": "2000000", "Есть недвижимость": "да"},
+        turns=["Хочу рассмотреть под квартиру"],
+        expected_route="MORTGAGE_AUX",
+    ),
+    SmokeScenario(
+        scenario_id="fraud_sms_code",
+        public_form={"Сумма": "600000", "Есть недвижимость": "да"},
+        turns=["Мне позвонили от вашего имени и попросили код из СМС"],
+        expected_route="FRAUD_CHECK",
+        expected_terminal_action="SECURITY_FLOW",
+    ),
 ]
 
 MIN_FEW_SHOT_BODY_COPY_LENGTH = 40

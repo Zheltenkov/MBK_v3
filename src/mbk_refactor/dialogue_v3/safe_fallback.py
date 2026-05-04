@@ -66,6 +66,7 @@ def deterministic_question_for_slot(slot: str) -> str:
     """Map the next backend slot to one customer-facing question."""
 
     questions = {
+        "need_type": "Деньги нужны больше закрыть долги или карты, снизить ежемесячный платеж или получить сумму на руки?",
         "property_type": "Какая недвижимость есть: квартира, дом или другой объект?",
         "property_owner_or_ownership": "На кого оформлена недвижимость и готов ли собственник участвовать?",
         "property_encumbrance_basic": "Есть ли по недвижимости ипотека, залог, арест или другие обременения?",

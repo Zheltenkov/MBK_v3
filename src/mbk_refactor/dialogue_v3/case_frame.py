@@ -12,6 +12,19 @@ from .state import DialogueV3State
 class CaseFrame:
     service_intent: Literal["normal", "fraud_check", "repeat_visit"] = "normal"
     need_type: Literal["new_money", "payment_reduction", "debt_solution", "security", "unknown"] = "unknown"
+    early_need_signal: Literal[
+        "unknown",
+        "new_money",
+        "debt_solution",
+        "payment_reduction",
+        "repair_or_purpose",
+        "explicit_pts",
+        "explicit_mortgage",
+        "security",
+        "repeat",
+    ] = "unknown"
+    explicit_pts_intent: bool = False
+    explicit_mortgage_intent: bool = False
 
     desired_amount: int | None = None
     total_debt: int | None = None
@@ -74,6 +87,13 @@ def build_case_frame(state: DialogueV3State) -> CaseFrame:
     frame.need_type = _str_value(state, "need_type", "unknown")  # type: ignore[assignment]
     if frame.service_intent == "fraud_check":
         frame.need_type = "security"
+        frame.early_need_signal = "security"
+    elif frame.service_intent == "repeat_visit":
+        frame.early_need_signal = "repeat"
+    else:
+        frame.early_need_signal = _str_value(state, "early_need_signal", "unknown")  # type: ignore[assignment]
+    frame.explicit_pts_intent = _bool_value(state, "explicit_pts_intent")
+    frame.explicit_mortgage_intent = _bool_value(state, "explicit_mortgage_intent")
 
     # Numeric facts are copied only when already normalized by extraction or tests.
     frame.desired_amount = _int_value(state, "desired_amount")

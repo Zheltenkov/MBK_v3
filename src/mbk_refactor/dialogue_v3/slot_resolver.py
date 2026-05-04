@@ -61,6 +61,8 @@ def is_slot_closed(slot: str, *, state: DialogueV3State, frame: CaseFrame) -> bo
         return frame.arrears_months is not None or _fact_known(state, "has_arrears")
     if slot == "desired_amount_or_total_debt":
         return frame.desired_amount is not None or frame.total_debt is not None
+    if slot == "need_type":
+        return _need_type_known(frame)
 
     # Simple slots use direct fact names plus CaseFrame fields where available.
     if slot == "property_type":
@@ -76,7 +78,7 @@ def is_slot_closed(slot: str, *, state: DialogueV3State, frame: CaseFrame) -> bo
     if slot == "comfortable_payment":
         return frame.comfortable_payment is not None
     if slot == "loan_types":
-        return frame.loan_types_known
+        return frame.loan_types_known or frame.has_mfo is not None
     if slot == "urgency":
         return _fact_known(state, "urgency")
 
@@ -85,3 +87,17 @@ def is_slot_closed(slot: str, *, state: DialogueV3State, frame: CaseFrame) -> bo
 
 def _fact_known(state: DialogueV3State, key: str) -> bool:
     return state.fact_value(key) is not None
+
+
+def _need_type_known(frame: CaseFrame) -> bool:
+    if frame.need_type != "unknown":
+        return True
+    return bool(
+        frame.total_debt is not None
+        or frame.monthly_payments is not None
+        or frame.high_payment_load
+        or frame.payment_gap_large
+        or frame.client_wants_to_pay
+        or frame.has_mfo
+        or frame.collector_pressure
+    )

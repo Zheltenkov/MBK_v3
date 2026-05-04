@@ -31,19 +31,27 @@ def select_route(frame: CaseFrame, state: DialogueV3State) -> str:
     if _hard_conflicting_constraints(frame, state):
         return OTHER
 
-    if _property_collateral_possible(frame, state):
-        if _is_main_property_region(frame.property_region):
-            return MORTGAGE_MAIN
-        return MORTGAGE_AUX
-
-    if _pts_possible(frame, state):
+    if _explicit_vehicle_intent(frame, state) and _pts_possible(frame, state):
         return PTS
+
+    if _explicit_property_collateral_intent(frame, state) and not _mortgage_blocked(frame, state):
+        return _mortgage_route(frame)
 
     if _severe_debt_pressure(frame):
         return BFL_RI
 
     if _restructuring_debt_pressure(frame):
         return BFL_RD
+
+    early_route = _early_funnel_route(frame, state)
+    if early_route:
+        return early_route
+
+    if _property_collateral_possible(frame, state):
+        return _mortgage_route(frame)
+
+    if _pts_possible(frame, state) and _has_non_form_vehicle_evidence(state):
+        return PTS
 
     if _unsecured_possible(frame):
         return UNSECURED
@@ -55,15 +63,148 @@ def select_route(frame: CaseFrame, state: DialogueV3State) -> str:
 
 
 def _property_collateral_possible(frame: CaseFrame, state: DialogueV3State) -> bool:
-    if frame.property_refuses_collateral or "MORTGAGE" in state.rejected_routes:
+    if _mortgage_blocked(frame, state):
         return False
-    return bool(frame.has_property or frame.property_type or frame.property_region)
+    return bool(
+        frame.property_type
+        or frame.property_region
+        or _fact_is_not_from_form(state, "has_property")
+    )
+
+
+def _mortgage_blocked(frame: CaseFrame, state: DialogueV3State) -> bool:
+    return frame.property_refuses_collateral or "MORTGAGE" in state.rejected_routes
+
+
+def _mortgage_route(frame: CaseFrame) -> str:
+    if _is_main_property_region(frame.property_region):
+        return MORTGAGE_MAIN
+    return MORTGAGE_AUX
 
 
 def _pts_possible(frame: CaseFrame, state: DialogueV3State) -> bool:
     if frame.vehicle_refuses_collateral or frame.vehicle_hard_blocker or PTS in state.rejected_routes:
         return False
     return bool(frame.has_car or frame.car_brand_model_known or frame.car_year)
+
+
+def _early_funnel_route(frame: CaseFrame, state: DialogueV3State) -> str | None:
+    """Keep early generic turns in a safe funnel instead of form-asset collateral intake."""
+
+    if state.turn_index > 3:
+        return None
+    if _explicit_vehicle_intent(frame, state) or _explicit_property_collateral_intent(frame, state):
+        return None
+    if not _general_funnel_intent(frame, state):
+        return None
+
+    if frame.has_current_loans or frame.need_type in {"debt_solution", "payment_reduction"}:
+        return BFL_RD
+    if frame.early_need_signal in {"debt_solution", "payment_reduction", "repair_or_purpose"}:
+        return BFL_RD
+    if frame.desired_amount is not None or frame.early_need_signal == "new_money":
+        return UNSECURED
+    return BFL_RD
+
+
+def _explicit_vehicle_intent(frame: CaseFrame, state: DialogueV3State) -> bool:
+    if frame.explicit_pts_intent:
+        return True
+    text = _last_user_text(state)
+    return _contains_any(
+        text,
+        (
+            "машин",
+            "авто",
+            "птс",
+            "под авто",
+            "под птс",
+            "машину отдавать не буду",
+            "машина нужна",
+            "она для работы",
+        ),
+    )
+
+
+def _explicit_property_collateral_intent(frame: CaseFrame, state: DialogueV3State) -> bool:
+    if frame.explicit_mortgage_intent:
+        return True
+    text = _last_user_text(state)
+    return _contains_any(
+        text,
+        (
+            "под залог недвижимости",
+            "залог недвижимости",
+            "под недвижимость",
+            "под квартиру",
+            "под дом",
+            "под жилье",
+        ),
+    )
+
+
+def _general_funnel_intent(frame: CaseFrame, state: DialogueV3State) -> bool:
+    if frame.early_need_signal in {
+        "new_money",
+        "debt_solution",
+        "payment_reduction",
+        "repair_or_purpose",
+    }:
+        return True
+    if frame.need_type in {"new_money", "debt_solution", "payment_reduction"}:
+        return True
+    text = _last_user_text(state)
+    return _contains_any(
+        text,
+        (
+            "закрыть карты",
+            "закрыть карту",
+            "закрыть кредиты",
+            "закрыть долги",
+            "снизить платеж",
+            "платеж меньше",
+            "нужны деньги",
+            "деньги нужны",
+            "нужна сумма",
+            "получить сумму",
+            "сумму на руки",
+            "на ремонт",
+            "ремонт",
+            "хочу взять денег",
+            "платежи тяжело",
+        ),
+    )
+
+
+def _last_user_text(state: DialogueV3State) -> str:
+    value = state.fact_value("last_user_text", "")
+    return str(value or "").lower().replace("ё", "е")
+
+
+def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(pattern in text for pattern in patterns)
+
+
+def _form_fact_is_true(state: DialogueV3State, key: str) -> bool:
+    fact = state.facts.get(key)
+    return bool(fact and fact.source == "form" and fact.value is True)
+
+
+def _form_fact_known(state: DialogueV3State, key: str) -> bool:
+    fact = state.facts.get(key)
+    return bool(fact and fact.source == "form" and fact.value not in (None, "", False))
+
+
+def _fact_is_not_from_form(state: DialogueV3State, key: str) -> bool:
+    fact = state.facts.get(key)
+    return bool(fact and fact.source != "form" and fact.value not in (None, "", False))
+
+
+def _has_non_form_vehicle_evidence(state: DialogueV3State) -> bool:
+    return any(
+        _fact_is_not_from_form(state, key)
+        for key in ("has_car", "raw_car_name", "car_brand_model_known", "car_year")
+    )
 
 
 def _severe_debt_pressure(frame: CaseFrame) -> bool:

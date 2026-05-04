@@ -188,7 +188,7 @@ def test_assistant_collects_debt_child_fact_after_root_credit_signal() -> None:
     assert state.fact_value("monthly_payments") is None
 
 
-def test_assistant_collects_property_child_fact_after_root_asset_signal() -> None:
+def test_root_asset_signal_does_not_force_mortgage_child_intake_for_generic_money() -> None:
     state = public_form_to_state(
         {"Сумма": 2_000_000, "Тип актива": "Недвижимость"},
         session_id="property-intake",
@@ -196,7 +196,7 @@ def test_assistant_collects_property_child_fact_after_root_asset_signal() -> Non
 
     result = DialogueV3Engine().handle_turn("Нужны деньги.", state)
 
-    assert result.route_session.selected_route == "MORTGAGE_AUX"
-    assert result.route_session.next_slot == "property_type"
+    assert result.route_session.selected_route != "MORTGAGE_AUX"
+    assert result.route_session.next_slot != "property_type"
     assert state.fact_value("property_type") is None
     assert state.fact_value("property_region") is None

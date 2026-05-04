@@ -63,7 +63,11 @@ class DialogueV3Engine:
         current_state.turn_index += 1
         current_state.add_user_message(user_message)
 
-        extracted = extract_turn(user_message, turn_index=current_state.turn_index)
+        extracted = extract_turn(
+            user_message,
+            turn_index=current_state.turn_index,
+            state=current_state,
+        )
         current_state.merge_extracted_turn(extracted)
 
         frame = build_case_frame(current_state)

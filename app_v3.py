@@ -53,6 +53,7 @@ SESSION_RESET_DEFAULTS: dict[str, Any] = {
     "last_llm_status": None,
     "saved_dialog_path": "",
     "saved_trace_path": "",
+    "saved_debug_path": "",
 }
 
 
@@ -100,6 +101,7 @@ def _init_state() -> None:
         "model_name": DEFAULT_MODEL_NAME,
         "saved_dialog_path": "",
         "saved_trace_path": "",
+        "saved_debug_path": "",
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -201,11 +203,10 @@ def _render_manual_form() -> None:
             "Расходы на аренду жилья": _int_or_none(rent_expenses),
             "Тип актива": None if asset_type == "—" else asset_type,
         }
-        facts = public_form_to_facts(form_payload)
+        state, facts = start_chat_from_form(form_payload, session_id=str(uuid4()))
         if not facts:
             st.error("Заполните хотя бы одно содержательное поле анкеты.")
             return
-        state = public_form_to_state(form_payload, session_id=str(uuid4()))
         st.session_state["v3_state"] = state
         st.session_state["applied_form"] = _drop_empty(form_payload)
         st.session_state["applied_facts"] = facts
@@ -214,6 +215,7 @@ def _render_manual_form() -> None:
         st.session_state["last_error"] = ""
         st.session_state["saved_dialog_path"] = ""
         st.session_state["saved_trace_path"] = ""
+        st.session_state["saved_debug_path"] = ""
         st.success("Анкета применена. Можно вести диалог.")
         st.rerun()
 
@@ -230,6 +232,7 @@ def _render_save_panel() -> None:
     has_session = st.session_state.get("v3_state") is not None
     dialog_name, dialog_bytes = _build_dialog_download()
     trace_name, trace_bytes = _build_trace_download()
+    debug_name, debug_bytes = _build_debug_download()
 
     st.download_button(
         "Скачать диалог JSON",
@@ -247,8 +250,16 @@ def _render_save_panel() -> None:
         disabled=not has_session,
         use_container_width=True,
     )
+    st.download_button(
+        "Скачать debug JSON",
+        data=debug_bytes,
+        file_name=debug_name,
+        mime="application/json",
+        disabled=not has_session,
+        use_container_width=True,
+    )
 
-    save_col, trace_col = st.columns(2)
+    save_col, trace_col, debug_col = st.columns(3)
     with save_col:
         if st.button("Save dialog", disabled=not has_session, use_container_width=True):
             path = _save_artifact("dialogue_v3_ui_dialog", _current_dialog_payload())
@@ -257,11 +268,17 @@ def _render_save_panel() -> None:
         if st.button("Save trace", disabled=not has_session, use_container_width=True):
             path = _save_artifact("dialogue_v3_ui_trace", _current_trace_payload())
             st.session_state["saved_trace_path"] = str(path)
+    with debug_col:
+        if st.button("Save debug", disabled=not has_session, use_container_width=True):
+            path = _save_artifact("dialogue_v3_ui_debug", _current_debug_payload())
+            st.session_state["saved_debug_path"] = str(path)
 
     if st.session_state.get("saved_dialog_path"):
         st.caption(f"Диалог: {st.session_state['saved_dialog_path']}")
     if st.session_state.get("saved_trace_path"):
         st.caption(f"Trace: {st.session_state['saved_trace_path']}")
+    if st.session_state.get("saved_debug_path"):
+        st.caption(f"Debug: {st.session_state['saved_debug_path']}")
 
 
 def _render_chat() -> None:
@@ -274,7 +291,7 @@ def _render_chat() -> None:
         st.warning("Диалог заблокирован: сначала заполните анкету слева и нажмите «Старт чат по анкете».")
         return
     if not messages:
-        st.info("Анкета применена. Напишите первое сообщение клиента.")
+        st.caption("Чат готов.")
         return
 
     for message in messages:
@@ -332,19 +349,7 @@ def _render_debug_panel() -> None:
         return
 
     trace = result.trace.to_dict()
-    top = {
-        "selected_route": trace.get("selected_route"),
-        "phase": trace.get("phase"),
-        "next_slot": trace.get("next_slot"),
-        "terminal_action": trace.get("terminal_action"),
-        "validation_problems": [_to_plain(issue) for issue in result.writer_validation.issues],
-        "initial_validation_problems": [
-            _to_plain(issue) for issue in result.initial_writer_validation.issues
-        ],
-        "fallback_used": result.fallback_used,
-        "writer_invalid": result.writer_invalid,
-    }
-    st.json(top, expanded=True)
+    st.json(_debug_top_payload(result, trace), expanded=True)
 
     with st.expander("RouteSession", expanded=True):
         st.json(_to_plain(result.route_session), expanded=True)
@@ -394,6 +399,7 @@ def _reset_dialog() -> None:
         "last_llm_status",
         "saved_dialog_path",
         "saved_trace_path",
+        "saved_debug_path",
     ):
         st.session_state[key] = SESSION_RESET_DEFAULTS[key]
 
@@ -427,6 +433,81 @@ def _drop_empty(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         result[key] = value
     return result
+
+
+def start_chat_from_form(
+    form_payload: dict[str, Any],
+    *,
+    session_id: str | None = None,
+) -> tuple[DialogueV3State, dict[str, object]]:
+    """Create a form-backed state and add the opening assistant bubble."""
+
+    facts = public_form_to_facts(form_payload)
+    state = public_form_to_state(form_payload, session_id=session_id or str(uuid4()))
+    if facts:
+        state.add_assistant_message(build_form_opening_message(state))
+    return state, facts
+
+
+def build_form_opening_message(state: DialogueV3State) -> str:
+    """Build the first assistant message after the public form is submitted."""
+
+    greeting = _opening_greeting(state.fact_value("full_name"))
+    facts_summary = _opening_root_facts_summary(state)
+    facts_clause = f" {facts_summary}" if facts_summary else ""
+    return (
+        f"{greeting} Заявку вижу.{facts_clause} "
+        "Чтобы не гадать с продуктом, сначала уточню главное: "
+        "что для вас сейчас в первую очередь - закрыть долги или карты, "
+        "снизить ежемесячный платеж, получить сумму на руки или другая задача?"
+    )
+
+
+def _opening_greeting(full_name: object | None) -> str:
+    display_name = _display_name_from_full_name(full_name)
+    if display_name:
+        return f"{display_name}, добрый день."
+    return "Добрый день."
+
+
+def _display_name_from_full_name(full_name: object | None) -> str:
+    parts = str(full_name or "").strip().split()
+    if not parts:
+        return ""
+    if len(parts) >= 3:
+        return f"{parts[1]} {parts[2]}"
+    if len(parts) == 2 and _looks_like_patronymic(parts[1]):
+        return f"{parts[0]} {parts[1]}"
+    return parts[0]
+
+
+def _looks_like_patronymic(value: str) -> bool:
+    normalized = value.lower().replace("ё", "е")
+    return normalized.endswith(("вич", "вна", "ична", "инична", "оглы", "кызы"))
+
+
+def _opening_root_facts_summary(state: DialogueV3State) -> str:
+    facts: list[str] = []
+    amount = state.fact_value("desired_amount")
+    if isinstance(amount, int):
+        facts.append(f"нужна сумма {_format_rub_amount(amount)}")
+    if state.fact_value("has_current_loans") is True:
+        facts.append("есть текущие кредиты")
+    if state.fact_value("has_car") is True:
+        facts.append("указали авто")
+    asset_type = state.fact_value("asset_type")
+    if isinstance(asset_type, str) and asset_type.strip():
+        facts.append(f"актив - {asset_type.strip().lower()}")
+    employment_type = state.fact_value("employment_type")
+    if isinstance(employment_type, str) and employment_type.strip():
+        facts.append(f"занятость - {employment_type.strip().lower()}")
+    if not facts:
+        return ""
+    return "По анкете: " + ", ".join(facts[:5]) + "."
+
+
+def _format_rub_amount(amount: int) -> str:
+    return f"{amount:,}".replace(",", " ") + " ₽"
 
 
 def _str_or_none(value: Any) -> str | None:
@@ -477,6 +558,59 @@ def _current_trace_payload() -> dict[str, Any]:
     }
 
 
+def _current_debug_payload() -> dict[str, Any]:
+    """Build an export payload mirroring the visible Debug panel."""
+
+    state = st.session_state.get("v3_state")
+    result = st.session_state.get("last_result")
+    status = st.session_state.get("last_llm_status")
+    payload: dict[str, Any] = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "mode": "dialogue_v3_debug",
+        "writer_mode": WRITER_MODE,
+        "model_name": st.session_state.get("model_name"),
+        "llm_status": _to_plain(status) if status is not None else None,
+        "last_error": st.session_state.get("last_error") or "",
+        "input_parameters": st.session_state.get("applied_form") or {},
+        "applied_facts": st.session_state.get("applied_facts") or {},
+        "messages": _messages_to_plain(state),
+        "turns": list(st.session_state.get("turn_records") or []),
+        "trace_history": list(getattr(state, "trace_history", []) or []),
+        "state": _state_to_plain(state),
+    }
+
+    if state is None:
+        payload["debug"] = {"status": "no_session"}
+        return payload
+
+    if result is None:
+        payload["debug"] = {
+            "status": "initial_facts_only",
+            "initial_facts": _facts_to_plain(state),
+        }
+        return payload
+
+    trace = result.trace.to_dict()
+    payload["debug"] = {
+        "status": "last_turn",
+        "top": _debug_top_payload(result, trace),
+        "route_session": _to_plain(result.route_session),
+        "actor_move": _to_plain(result.actor_move),
+        "writer_validation": {
+            "accepted": result.writer_validation.accepted,
+            "initial_accepted": result.initial_writer_validation.accepted,
+            "repair_attempted": result.repair_attempted,
+            "fallback_used": result.fallback_used,
+            "issues": [_to_plain(issue) for issue in result.writer_validation.issues],
+            "initial_issues": [_to_plain(issue) for issue in result.initial_writer_validation.issues],
+        },
+        "action_events": [_to_plain(event) for event in result.events],
+        "extracted_facts": _to_plain(result.extracted),
+        "case_frame": _to_plain(result.frame),
+    }
+    return payload
+
+
 def _build_dialog_download() -> tuple[str, bytes]:
     payload = _current_dialog_payload()
     return _download_name("dialogue_v3_dialog"), _json_bytes(payload)
@@ -485,6 +619,11 @@ def _build_dialog_download() -> tuple[str, bytes]:
 def _build_trace_download() -> tuple[str, bytes]:
     payload = _current_trace_payload()
     return _download_name("dialogue_v3_trace"), _json_bytes(payload)
+
+
+def _build_debug_download() -> tuple[str, bytes]:
+    payload = _current_debug_payload()
+    return _download_name("dialogue_v3_debug"), _json_bytes(payload)
 
 
 def _save_artifact(prefix: str, payload: dict[str, Any]) -> Path:
@@ -528,6 +667,21 @@ def _turn_record(result: DialogueV3TurnResult) -> dict[str, Any]:
         "repair_attempted": result.repair_attempted,
         "fallback_used": result.fallback_used,
         "trace": result.trace.to_dict(),
+    }
+
+
+def _debug_top_payload(result: DialogueV3TurnResult, trace: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "selected_route": trace.get("selected_route"),
+        "phase": trace.get("phase"),
+        "next_slot": trace.get("next_slot"),
+        "terminal_action": trace.get("terminal_action"),
+        "validation_problems": [_to_plain(issue) for issue in result.writer_validation.issues],
+        "initial_validation_problems": [
+            _to_plain(issue) for issue in result.initial_writer_validation.issues
+        ],
+        "fallback_used": result.fallback_used,
+        "writer_invalid": result.writer_invalid,
     }
 
 
