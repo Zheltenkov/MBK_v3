@@ -5,6 +5,7 @@ import pytest
 from mbk_refactor.dialogue_v3.engine import DialogueV3Engine
 from mbk_refactor.dialogue_v3.facts import extract_turn, get_last_asked_slot
 from mbk_refactor.dialogue_v3.case_frame import build_case_frame
+from mbk_refactor.dialogue_v3.constants import REPEAT_HANDOFF, REPEAT_VISIT
 from mbk_refactor.dialogue_v3.slot_resolver import is_slot_closed
 from mbk_refactor.dialogue_v3.state import DialogueV3State
 
@@ -15,6 +16,35 @@ def test_debt_intent_beats_repair_purpose() -> None:
     assert extracted.facts["early_need_signal"] == "debt_solution"
     assert extracted.facts["need_type"] == "debt_solution"
     assert extracted.facts["purpose_goal"] == "repair"
+
+
+def test_credit_card_debt_intent_with_car_repair_does_not_become_pts() -> None:
+    extracted = extract_turn("Хочу закрыть две кредитные карты и немного оставить на ремонт машины.")
+
+    assert extracted.facts["early_need_signal"] == "debt_solution"
+    assert extracted.facts["need_type"] == "debt_solution"
+    assert extracted.facts["purpose_goal"] == "car_repair"
+    assert "explicit_pts_intent" not in extracted.facts
+    assert "explicit_mortgage_intent" not in extracted.facts
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Хочу закрыть две кредитные карты",
+        "Нужно погасить кредитки",
+        "Хочу перекрыть долги",
+        "Надо объединить кредиты",
+        "Хочу рефинансироваться",
+        "Платежи тяжело тянуть",
+        "Хочу снизить платеж",
+    ],
+)
+def test_live_debt_phrases_set_debt_or_payment_need(text: str) -> None:
+    extracted = extract_turn(text)
+
+    assert extracted.facts["need_type"] in {"debt_solution", "payment_reduction"}
+    assert extracted.facts["early_need_signal"] in {"debt_solution", "payment_reduction"}
 
 
 def test_repair_alone_is_purpose_not_mortgage() -> None:
@@ -210,6 +240,238 @@ def test_amounts_follow_last_asked_slot_context() -> None:
     assert fifth.extracted.facts["comfortable_payment"] == 35_000
 
 
+def test_income_slot_answer_with_monthly_phrase_does_not_overwrite_monthly_payments() -> None:
+    state = DialogueV3State(session_id="income-context")
+    state.merge_facts({"monthly_payments": 34_000})
+    state.asked_slots.append("income_status")
+
+    extracted = extract_turn("Официальный, работаю по найму. Доход примерно 115 тысяч в месяц.", state=state)
+
+    assert extracted.facts["official_income"] == 115_000
+    assert extracted.facts["income_status"] == "stable"
+    assert "monthly_payments" not in extracted.facts
+
+
+def test_income_slot_wins_when_income_and_monthly_contexts_both_appear() -> None:
+    state = DialogueV3State(session_id="income-beats-monthly-context")
+    state.merge_facts({"monthly_payments": 34_000})
+    state.asked_slots.append("income_status")
+
+    extracted = extract_turn(
+        "Платеж 34 уже писал, доход примерно 115 тысяч в месяц.",
+        state=state,
+    )
+
+    assert extracted.facts["official_income"] == 115_000
+    assert extracted.facts["income_status"] == "stable"
+    assert "monthly_payments" not in extracted.facts
+    assert state.fact_value("monthly_payments") == 34_000
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Доход 115 тысяч",
+        "115 тысяч в месяц",
+        "официально 115",
+        "работаю, получаю 115",
+    ],
+)
+def test_income_slot_prioritizes_official_income_over_monthly_payment(text: str) -> None:
+    state = DialogueV3State(session_id="income-priority")
+    state.merge_facts({"monthly_payments": 34_000})
+    state.asked_slots.append("income_status")
+
+    extracted = extract_turn(text, state=state)
+
+    assert extracted.facts["official_income"] == 115_000
+    assert extracted.facts["income_status"] == "stable"
+    assert "monthly_payments" not in extracted.facts
+    assert state.fact_value("monthly_payments") == 34_000
+
+
+def test_monthly_payment_slot_wins_when_income_and_monthly_contexts_both_appear() -> None:
+    state = DialogueV3State(session_id="monthly-beats-income-context")
+    state.asked_slots.append("monthly_payments")
+
+    extracted = extract_turn("Доход 115 тысяч в месяц", state=state)
+
+    assert extracted.facts["monthly_payments"] == 115_000
+    assert "official_income" not in extracted.facts
+    assert "income_status" not in extracted.facts
+
+
+def test_income_answer_keeps_monthly_payments_closed_and_moves_on() -> None:
+    state = DialogueV3State(session_id="income-next-slot")
+    state.merge_facts(
+        {
+            "has_current_loans": True,
+            "need_type": "debt_solution",
+            "total_debt": 520_000,
+            "monthly_payments": 34_000,
+        },
+        source="form",
+    )
+    state.asked_slots.append("income_status")
+
+    result = DialogueV3Engine().handle_turn("Доход 115 тысяч в месяц", state)
+
+    assert result.extracted.facts["official_income"] == 115_000
+    assert "monthly_payments" not in result.extracted.facts
+    assert result.state.fact_value("monthly_payments") == 34_000
+    assert "monthly_payments" in result.route_session.closed_primary_slots
+    assert result.route_session.next_slot != "monthly_payments"
+
+
+def test_comfortable_payment_answer_with_monthly_word_does_not_overwrite_monthly_payments() -> None:
+    state = DialogueV3State(session_id="comfortable-context")
+    state.merge_facts({"monthly_payments": 34_000})
+    state.asked_slots.append("comfortable_payment")
+
+    extracted = extract_turn("35 тысяч в месяц", state=state)
+
+    assert extracted.facts["comfortable_payment"] == 35_000
+    assert "monthly_payments" not in extracted.facts
+
+
+def test_comfortable_payment_range_uses_upper_bound() -> None:
+    state = DialogueV3State(session_id="comfortable-range")
+    state.asked_slots.append("comfortable_payment")
+
+    extracted = extract_turn("25-28 тысяч", state=state)
+
+    assert extracted.facts["comfortable_payment"] == 28_000
+    assert "monthly_payments" not in extracted.facts
+
+
+def test_active_dialog_correction_is_not_repeat_visit_service_signal() -> None:
+    state = DialogueV3State(session_id="active-correction")
+    state.turn_index = 5
+    state.merge_facts({"has_current_loans": True, "monthly_payments": 34_000})
+    state.asked_slots.append("comfortable_payment")
+
+    extracted = extract_turn("Я уже писал — около 34 тысяч в месяц по двум картам.", state=state)
+
+    assert extracted.service_signal is None
+    assert "service_signal" not in extracted.facts
+    assert "comfortable_payment" not in extracted.facts
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Я уже писал — около 34 тысяч в месяц",
+        "Я уже написал выше — около 34 тысяч",
+        "Я уже говорил, примерно 34 тысячи",
+        "Я же сказал — 34 тысячи",
+        "Я уже отвечал на это",
+        "Выше написал: 34 тысячи",
+        "Я это уже указал",
+        "Повторяю, 34 тысячи в месяц",
+    ],
+)
+def test_active_dialog_correction_phrases_do_not_select_repeat_visit(text: str) -> None:
+    state = DialogueV3State(session_id="active-correction-route")
+    state.turn_index = 3
+    state.merge_facts(
+        {
+            "has_current_loans": True,
+            "need_type": "debt_solution",
+            "total_debt": 520_000,
+            "monthly_payments": 34_000,
+        }
+    )
+    state.asked_slots.append("monthly_payments")
+
+    result = DialogueV3Engine().handle_turn(text, state)
+
+    assert result.extracted.service_signal is None
+    assert result.extracted.facts.get("service_signal") is None
+    assert result.route_session.selected_route != REPEAT_VISIT
+    assert result.route_session.terminal_action != REPEAT_HANDOFF
+    assert result.state.fact_value("monthly_payments") == 34_000
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Я уже обращался",
+        "Я уже оставлял заявку",
+        "Я уже переходил в чат",
+        "Мне не ответили",
+        "Со мной не связались",
+        "По старой заявке",
+        "Продолжить прошлую заявку",
+        "Раньше писал вам и не ответили",
+    ],
+)
+def test_explicit_previous_company_contact_still_selects_repeat_visit(text: str) -> None:
+    result = DialogueV3Engine().handle_turn(text)
+
+    assert result.extracted.service_signal == "repeat_visit"
+    assert result.route_session.selected_route == REPEAT_VISIT
+    assert result.route_session.terminal_action == REPEAT_HANDOFF
+
+
+def test_manual_ui_cards_repair_hotfix_flow() -> None:
+    state = DialogueV3State(session_id="manual-ui-hotfix")
+    state.merge_facts(
+        {
+            "desired_amount": 680_000,
+            "full_name": "Громов Денис Андреевич",
+            "has_current_loans": True,
+            "employment_type": "employment",
+            "has_car": True,
+            "asset_type": "Недвижимость",
+            "has_property": True,
+        },
+        source="form",
+    )
+    engine = DialogueV3Engine()
+
+    first = engine.handle_turn(
+        "Хочу закрыть две кредитные карты и немного оставить на ремонт машины.",
+        state,
+    )
+    assert first.extracted.facts["need_type"] == "debt_solution"
+    assert first.extracted.facts["purpose_goal"] == "car_repair"
+    assert "explicit_pts_intent" not in first.extracted.facts
+    assert first.route_session.next_slot == "total_debt"
+    assert "need_type" in first.route_session.closed_primary_slots
+
+    second = engine.handle_turn(
+        "В первую очередь закрыть карты. Если получится, часть суммы оставить на ремонт машины.",
+        first.state,
+    )
+    assert second.extracted.facts["need_type"] == "debt_solution"
+    assert second.route_session.next_slot == "total_debt"
+
+    third = engine.handle_turn("Около 520 тысяч по двум кредитным картам.", second.state)
+    assert third.extracted.facts["total_debt"] == 520_000
+    assert third.route_session.next_slot == "monthly_payments"
+
+    fourth = engine.handle_turn("Примерно 34 тысячи в месяц.", third.state)
+    assert fourth.extracted.facts["monthly_payments"] == 34_000
+    assert fourth.route_session.next_slot == "income_status"
+
+    fifth = engine.handle_turn(
+        "Официальный, работаю по найму. Доход примерно 115 тысяч в месяц.",
+        fourth.state,
+    )
+    assert fifth.extracted.facts["official_income"] == 115_000
+    assert fifth.extracted.facts["income_status"] == "stable"
+    assert "monthly_payments" not in fifth.extracted.facts
+    assert fifth.state.fact_value("monthly_payments") == 34_000
+    assert fifth.route_session.next_slot in {"comfortable_payment", "delinquency_context"}
+    assert fifth.route_session.selected_route != "REPEAT_VISIT"
+
+    sixth = engine.handle_turn("Я уже писал — около 34 тысяч в месяц по двум картам.", fifth.state)
+    assert sixth.extracted.service_signal is None
+    assert "service_signal" not in sixth.extracted.facts
+    assert sixth.route_session.selected_route != "REPEAT_VISIT"
+    assert sixth.route_session.terminal_action is None
+
+
 @pytest.mark.parametrize(
     ("slot", "text", "fact_key", "expected"),
     [
@@ -230,6 +492,23 @@ def test_short_amounts_use_asked_slot_context(
     extracted = extract_turn(text, state=state)
 
     assert extracted.facts[fact_key] == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Примерно 1 миллион 450 тысяч.", 1_450_000),
+        ("1 млн 450 тысяч", 1_450_000),
+        ("1,45 млн", 1_450_000),
+    ],
+)
+def test_composite_million_amounts_use_full_value(text: str, expected: int) -> None:
+    state = DialogueV3State(session_id="composite-amount")
+    state.asked_slots.append("total_debt")
+
+    extracted = extract_turn(text, state=state)
+
+    assert extracted.facts["total_debt"] == expected
 
 
 def test_month_duration_does_not_fill_contextual_payment_amount() -> None:
@@ -283,6 +562,23 @@ def test_no_stable_income_and_arrears_months_do_not_create_income_amount() -> No
     assert extracted.facts["arrears_months"] == 3.0
     assert extracted.facts["collector_pressure"] is True
     assert "official_income" not in extracted.facts
+
+
+def test_no_stable_income_extracts_even_when_last_slot_was_monthly_payment() -> None:
+    state = DialogueV3State(session_id="unstable-income-after-payment-question")
+    state.asked_slots.append("monthly_payments")
+
+    extracted = extract_turn(
+        "Дохода стабильного нет, просрочка 3 месяца, коллекторы звонят",
+        state=state,
+    )
+
+    assert extracted.facts["income_status"] == "unstable"
+    assert extracted.facts["has_arrears"] is True
+    assert extracted.facts["arrears_months"] == 3.0
+    assert extracted.facts["collector_pressure"] is True
+    assert "official_income" not in extracted.facts
+    assert "monthly_payments" not in extracted.facts
 
 
 def test_conflicting_fact_is_not_treated_as_closed_slot() -> None:

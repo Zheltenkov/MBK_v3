@@ -36,9 +36,60 @@ def test_prompt_says_terminal_action_does_not_ask_new_question() -> None:
     assert "объясни следующий шаг и остановись" in SYSTEM_PROMPT.lower()
 
 
+def test_prompt_allows_manager_like_ask_slot_body() -> None:
+    lowered = SYSTEM_PROMPT.lower()
+
+    assert "ты не анкета" in lowered
+    assert "body нужен, если без него ответ звучит как сухая форма" in lowered
+    assert "ask_slot" in lowered
+    assert "body: 1-3 коротких предложения" in lowered
+    assert "followup_question: ровно один вопрос по next_slot" in lowered
+
+
+def test_prompt_defines_post_terminal_answer_behavior() -> None:
+    lowered = SYSTEM_PROMPT.lower()
+
+    assert "post_terminal_answer" in lowered
+    assert "ответь на уточнение клиента напрямую" in lowered
+    assert "не обязательно банкротство" in lowered
+    assert "посильный график/реструктуризацию" in lowered
+
+
+def test_prompt_tells_repeat_action_to_avoid_workflow_terms() -> None:
+    lowered = SYSTEM_PROMPT.lower()
+
+    assert "если move_type=repeat_action" in lowered
+    assert "не упоминай сбор данных" in lowered
+    assert "восстановим контакт" in lowered
+
+
 def test_prompt_forbids_hardcoded_example_names() -> None:
     assert "не используй имя клиента, если оно не передано" in SYSTEM_PROMPT.lower()
     assert "не подставляй имена из примеров" in SYSTEM_PROMPT.lower()
+
+
+def test_prompt_forbids_pipeline_and_slot_internal_terms() -> None:
+    lowered = SYSTEM_PROMPT.lower()
+
+    assert "pipeline" in lowered
+    assert "пайплайн" in lowered
+    assert "slot" in lowered
+    assert "слот" in lowered
+
+
+def test_manager_like_few_shots_are_present() -> None:
+    examples = {example["name"]: example for example in FEW_SHOT_EXAMPLES}
+
+    assert examples["debt_flow_ask_total_debt"]["move"]["next_slot"] == "total_debt"
+    debt_example = examples["debt_flow_ask_total_debt"]
+    assert "good_json" not in debt_example
+    assert "good_pattern" in debt_example
+    assert "possible_wording_variants" in debt_example
+    assert debt_example["canonical_followup_question"] == "Сколько сейчас всего долгов?"
+    assert examples["payment_load_to_delinquency"]["move"]["next_slot"] == "delinquency_context"
+    assert "специалисту по долгам" in examples["bfl_terminal_next_step"]["good_json"]["body"].lower()
+    assert examples["post_terminal_bankruptcy_question"]["move"]["move_type"] == "post_terminal_answer"
+    assert "не обязательно банкротство" in examples["post_terminal_bankruptcy_question"]["good_json"]["body"].lower()
 
 
 def test_python_offtopic_is_not_executed() -> None:
@@ -178,7 +229,7 @@ def test_ordinary_ask_slot_has_no_long_body() -> None:
     )
     output = ActorWriter(mode="deterministic").write(move=move)
 
-    assert output.body == ""
+    assert len(output.body) < 90
     assert output.followup_question
     assert ResponseGuard().validate(output=output, move=move).accepted
 

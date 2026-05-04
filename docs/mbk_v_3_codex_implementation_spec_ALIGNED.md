@@ -1,5 +1,9 @@
 # MBK v3 Working Assistant Core — подробная инструкция для Codex
 
+
+> **Обновление 2026-05-04 — alignment with docs/scenario vision.**
+> В документ добавлены правки после аудита `docs/cs_scenario.jpg`, `Input + Qualification.csv`, `Target.csv`, `Red Flags and Fit-cases.csv`, текущего `dialogue_v3` runtime и тестов. Главная коррекция: ранний диалог — это **воронка/коридор квалификации**, а не немедленный выбор одного из продуктовых route. `selected_route` не должен врать: generic “хочу взять денег” не является `BFL_RD`, а root-факты формы не являются согласием на залоговый продукт.
+
 ## 0. Задача одним предложением
 
 Нужно собрать **третью рабочую версию ассистента MBK** на базе двух репозиториев:
@@ -135,7 +139,95 @@ next_slot: property_type
 terminal_action: None
 ```
 
----
+### 3.1. Дополнительная ошибка, выявленная после аудита v3
+
+После проверки текущей ветки `MBK_v3` появилась новая архитектурная ловушка:
+
+```text
+selected_route используется как временный early-funnel контейнер.
+```
+
+Например, generic-реплика клиента:
+
+```text
+Хочу взять денег
+```
+
+не должна превращаться в:
+
+```text
+selected_route = BFL_RD
+next_slot = need_type
+```
+
+`BFL_RD` — это конкретный продуктовый сценарий судебной реструктуризации / посильного законного графика выплат, а не ранняя “коробка” для вопроса о цели денег. Даже если ассистент задаёт нормальный вопрос, trace в таком случае уже врёт: аналитика, smoke и writer будут думать, что сценарий BFL_RD выбран.
+
+Правильная модель:
+
+```text
+generic intent / unclear goal
+→ DISCOVERY / early funnel
+→ need_type
+→ после route-defining facts выбирается продуктовый route
+```
+
+`selected_route` должен означать **текущее честное состояние решения**. Если продукт ещё не выбран, нельзя подставлять ближайший удобный продуктовый route только ради того, чтобы получить нужный `next_slot`.
+
+### 3.2. Сценарии из docs — это не 10 равноправных route на первом ходе
+
+`docs/cs_scenario.jpg` описывает сценарии как группы/коридоры:
+
+```text
+Основные:
+- кредит под залог недвижимости
+- займ под залог ПТС
+- БФЛ
+  - реализация имущества / списание
+  - судебная реструктуризация
+
+Вспомогательные автономные:
+- залог недвижимости вне основных регионов
+- потребительский кредит без залога
+- МФО
+- кредит под залог авто
+- прочие
+
+Служебные:
+- повторное обращение
+```
+
+Это значит:
+
+```text
+ранний диалог = понять коридор / цель / ограничения
+поздний диалог = выбрать route/action
+```
+
+А не:
+
+```text
+первое сообщение клиента → сразу выбрать один из 10 route
+```
+
+Root-факт формы:
+
+```text
+Тип актива = недвижимость
+Есть авто = да
+Есть кредиты = да
+```
+
+означает только:
+
+```text
+если понадобится, эти ветки можно уточнить в чате
+```
+
+но не означает:
+
+```text
+клиент согласен на ипотечный/ПТС route
+```
 
 ## 4. Целевая архитектура v3
 
@@ -258,11 +350,12 @@ tests/dialogue_v3/
 
 ## 6. Domain vocabulary
 
-### 6.1. Canonical scenario ids
+### 6.1. Canonical route ids
 
 Использовать такие ids:
 
 ```python
+DISCOVERY
 MORTGAGE_MAIN
 MORTGAGE_AUX
 PTS
@@ -275,6 +368,44 @@ OTHER
 FRAUD_CHECK
 REPEAT_VISIT
 ```
+
+### 6.2. `DISCOVERY` — технический non-product route
+
+`DISCOVERY` нужен, чтобы trace не врал на ранних ходах.
+
+Использовать `DISCOVERY`, когда:
+
+```text
+- клиент говорит общо: “хочу взять денег”, “нужны деньги”, “можно оформить?”;
+- цель ещё не ясна;
+- есть root-факты формы, но нет явного согласия на залог/ПТС/БФЛ;
+- нужно задать верхнеуровневый вопрос: закрыть долги / снизить платёж / получить сумму на руки / другое.
+```
+
+`DISCOVERY` не является продуктом, сценарием продажи или action route.
+
+```text
+DISCOVERY:
+- terminal_action = None
+- no handoff
+- no links
+- no CRM action
+- writer не говорит клиенту “сценарий/маршрут/дискавери”
+```
+
+Если команда решит не добавлять отдельный `DISCOVERY`, то обязана сохранить эквивалентную честность trace:
+
+```text
+phase = DISCOVERY
+locked = false
+terminal_action = None
+reason_codes include provisional_early_funnel
+writer не использует продуктовую BFL/PTS/MORTGAGE рамку
+```
+
+Но предпочтительный вариант для v3 — **добавить `DISCOVERY` как технический route**, потому что это проще, честнее и лучше тестируется.
+
+### 6.3. Product route ids
 
 Если в MBK_refactor сейчас есть `AUTO_COLLATERAL_AUX`, нужно сделать alias layer:
 
@@ -290,6 +421,7 @@ ALIASES = {
 В customer-facing тексте никогда не писать:
 
 ```text
+DISCOVERY
 AUTO_AUX
 AUTO_COLLATERAL_AUX
 BFL_RI
@@ -314,7 +446,47 @@ terminal
 ручной разбор специалистом
 ```
 
----
+### 6.4. Static scenario catalog, not a selector
+
+Разрешено добавить статический справочник:
+
+```python
+SCENARIO_CATALOG = {
+    "MORTGAGE_MAIN": {
+        "group": "main",
+        "product": "Кредит под залог недвижимости",
+        "delivery": "sales_handoff",
+    },
+    "PTS": {
+        "group": "main",
+        "product": "Займ под залог ПТС",
+        "delivery": "links_plus_sales_handoff",
+    },
+    "BFL_RD": {
+        "group": "main",
+        "product": "БФЛ: судебная реструктуризация",
+        "delivery": "partner_handoff",
+    },
+}
+```
+
+Но этот catalog не выбирает route. Он нужен только для:
+
+```text
+- debug trace;
+- action payload;
+- smoke/eval labels;
+- writer delivery wording после уже выбранного route.
+```
+
+Запрещено делать из него:
+
+```text
+ScenarioSelector
+PlaybookEngine
+Dynamic docs loader
+LLM over scenario catalog
+```
 
 ## 7. State model
 
@@ -378,7 +550,44 @@ def merge_fact(old: FactValue | None, new: FactValue) -> FactValue:
 
 ## 8. Fact extraction
 
-### 8.1. Простое правило
+### 8.1. Главный принцип
+
+`facts.py` извлекает наблюдения, а не выбирает сценарий.
+
+Правильное разделение:
+
+```text
+facts.py       → что клиент сказал / какие сигналы есть
+case_frame.py  → нормализованный compact snapshot
+routes.py      → единственное место выбора selected_route
+writer.py      → человеческая формулировка уже выбранного ActorMove
+```
+
+Запрещено превращать `facts.py` в скрытый route selector через набор фраз.
+
+Плохой паттерн:
+
+```python
+if "хочу платить" in text:
+    facts["selected_route"] = "BFL_RD"
+```
+
+или эквивалентный полускрытый вариант:
+
+```python
+facts["early_need_signal"] = "debt_solution"
+# а routes.py почти автоматически делает BFL_RD
+```
+
+Допустимый паттерн:
+
+```python
+facts["client_wants_to_pay"] = True
+facts["need_type"] = "debt_solution"
+# routes.py потом сам решает, хватает ли evidence для BFL_RD
+```
+
+### 8.2. Deterministic extraction допустим, но phrase lists должны быть управляемыми
 
 На первом этапе использовать hybrid extraction:
 
@@ -386,9 +595,33 @@ def merge_fact(old: FactValue | None, new: FactValue) -> FactValue:
 2. optional LLM extractor for natural user text;
 3. deterministic validation before state merge.
 
-Не надо строить большой NLP-пайплайн.
+Не надо строить большой NLP-пайплайн, но deterministic extraction должен быть структурированным.
 
-### 8.2. Минимальные extracted fields
+Phrase lists допустимы только как named constants:
+
+```python
+MONEY_REQUEST_PATTERNS
+DEBT_SOLUTION_PATTERNS
+PAYMENT_REDUCTION_PATTERNS
+REPAIR_PURPOSE_PATTERNS
+EXPLICIT_PTS_PATTERNS
+VEHICLE_RETENTION_PATTERNS
+VEHICLE_COLLATERAL_REFUSAL_PATTERNS
+EXPLICIT_MORTGAGE_PATTERNS
+PROPERTY_RISK_PATTERNS
+PROPERTY_POSITIVE_PATTERNS
+PROPERTY_NEGATIVE_PATTERNS
+MFO_PATTERNS
+COLLECTOR_PATTERNS
+ARREARS_PATTERNS
+WANTS_TO_PAY_PATTERNS
+BANKRUPTCY_FEAR_PATTERNS
+DEBT_PROCEDURE_HARD_REFUSAL_PATTERNS
+```
+
+Запрещено держать scattered if-блоки по всему файлу, где одно и то же условие задаёт разные факты в разных местах.
+
+### 8.3. Минимальные extracted fields
 
 ```python
 @dataclass
@@ -402,7 +635,27 @@ class ExtractedTurn:
     raw_user_text: str = ""
 ```
 
-### 8.3. Важные signals
+### 8.4. Recommended extraction stages
+
+`facts.py` должен быть разложен на этапы:
+
+```python
+def extract_turn(user_message: str, *, state: DialogueV3State | None = None, turn_index: int = 0) -> ExtractedTurn:
+    text = normalize_text(user_message)
+    facts = {"last_user_text": user_message}
+    concerns = []
+
+    service_signal, off_topic = extract_service_signals(text, facts, concerns)
+    extract_need_signals(text, facts)
+    extract_collateral_signals(text, facts, concerns, state)
+    extract_debt_signals(text, facts, concerns)
+    extract_amounts_with_context(text, facts, state)
+    derive_secondary_flags(facts)
+
+    return ExtractedTurn(...)
+```
+
+### 8.5. Важные signals
 
 #### Fraud/security
 
@@ -458,17 +711,225 @@ switch to english
 
 Это не route. Это `off_topic_signal`, который writer должен обработать actor-like redirect.
 
----
+### 8.6. `ремонт` не должен перебивать debt intent
+
+Плохо:
+
+```python
+if "ремонт" in text:
+    facts["early_need_signal"] = "repair_or_purpose"
+    return
+```
+
+Правильно:
+
+```text
+USER: Хочу закрыть карты и немного оставить на ремонт
+
+facts:
+- need_type = debt_solution
+- purpose_goal = repair
+- no explicit_mortgage_intent
+```
+
+`ремонт` — это purpose modifier. Он не означает ипотечный route и не должен прерывать extraction.
+
+### 8.7. Property mention не равно property ownership
+
+Запрещено:
+
+```python
+if "квартира" in text or "дом" in text:
+    facts["has_property"] = True
+```
+
+Разделить:
+
+```text
+explicit_mortgage_intent:
+- под квартиру
+- под дом
+- под недвижимость
+- под залог недвижимости
+- хочу рассмотреть под квартиру
+
+property_risk_concern:
+- боюсь потерять квартиру
+- квартиру потерять не хочу
+- страшно за жильё
+
+property_negative:
+- квартиры нет
+- недвижимости нет
+- жилья в собственности нет
+
+property_positive:
+- есть квартира
+- квартира в собственности
+- есть дом
+- недвижимость есть
+```
+
+### 8.8. Vehicle retention context
+
+Фразы:
+
+```text
+машину отдавать не буду
+машина нужна каждый день
+машина нужна для работы
+```
+
+означают:
+
+```python
+vehicle_requires_retention = True
+vehicle_refuses_transfer = True
+vehicle_refuses_collateral = False
+```
+
+Но фраза:
+
+```text
+она для работы
+```
+
+может относиться к машине только при наличии контекста:
+
+```text
+- state.has_car == True;
+- предыдущий next_slot был car_*;
+- текущий selected_route == PTS;
+- в текущем тексте есть машина/авто/ПТС.
+```
+
+Без контекста “она для работы” не должна создавать `explicit_pts_intent`.
+
+### 8.9. “Хочу платить” не равно hard refusal of debt procedure
+
+```text
+хочу платить
+```
+
+означает:
+
+```python
+client_wants_to_pay = True
+client_refuses_debt_procedure = False
+```
+
+```text
+Банкротство не хочу, хочу платить
+```
+
+означает:
+
+```python
+client_fears_bankruptcy = True
+client_wants_to_pay = True
+client_refuses_debt_procedure = False
+```
+
+Hard refusal только для фраз:
+
+```text
+никаких судов
+суды не рассматриваю
+юридические процедуры не хочу
+никакого банкротства и реструктуризации
+не хочу никакие процедуры
+```
+
+### 8.10. Amount extraction должен идти от last asked slot
+
+Суммы нельзя вытаскивать через `_first_amount(text)` без контекста.
+
+Правильный порядок:
+
+```text
+1. keyword-near amount;
+2. amount according to last_asked_slot;
+3. fallback только для коротких ответов, если есть понятный context.
+```
+
+Примеры:
+
+```text
+last_asked_slot=total_debt
+USER: 1.7 млн
+→ total_debt = 1700000
+
+last_asked_slot=monthly_payments
+USER: 78 тысяч
+→ monthly_payments = 78000
+
+last_asked_slot=comfortable_payment
+USER: 35 тысяч
+→ comfortable_payment = 35000
+
+last_asked_slot=income_status
+USER: 125 тысяч, официально работаю
+→ official_income = 125000, income_status = stable
+```
+
+### 8.11. Conflict semantics
+
+Если факт стал `quality="conflicting"`, он не должен закрывать slot автоматически.
+
+Плохое поведение:
+
+```text
+old total_debt = 1.7 млн
+new total_debt = 1.9 млн
+merge → old value 1.7 млн, quality=conflicting
+slot total_debt считается закрытым
+```
+
+Правильное поведение:
+
+```text
+- если клиент явно уточняет/исправляет предыдущее значение → принять новое значение;
+- если это реальный конфликт → не закрывать slot;
+- следующий move должен попросить уточнить конфликт, а не идти дальше.
+```
+
+`state.fact_value()` не должен возвращать conflicting value как обычное usable value без специальной обработки.
 
 ## 9. CaseFrame
 
 Создать `case_frame.py`.
 
+`CaseFrame` — compact snapshot для route/move, а не dump всей анкеты и не скрытый selector.
+
 ```python
 @dataclass
 class CaseFrame:
     service_intent: Literal["normal", "fraud_check", "repeat_visit"] = "normal"
-    need_type: Literal["new_money", "payment_reduction", "debt_solution", "security", "unknown"] = "unknown"
+
+    # broad need, not product route
+    need_type: Literal[
+        "new_money",
+        "payment_reduction",
+        "debt_solution",
+        "security",
+        "unknown",
+    ] = "unknown"
+
+    # early funnel observation; may help routes.py choose DISCOVERY/next_slot
+    early_need_signal: Literal[
+        "unknown",
+        "new_money",
+        "debt_solution",
+        "payment_reduction",
+        "repair_or_purpose",
+        "explicit_pts",
+        "explicit_mortgage",
+        "security",
+        "repeat",
+    ] = "unknown"
+
+    explicit_pts_intent: bool = False
+    explicit_mortgage_intent: bool = False
 
     desired_amount: int | None = None
     total_debt: int | None = None
@@ -520,7 +981,54 @@ class CaseFrame:
 
 Не тащить в CaseFrame весь state. Это не dump анкеты. Это нормализованный слепок для route/move.
 
----
+### 9.2. `early_need_signal` — не route
+
+`early_need_signal` допустим только как input:
+
+```text
+new_money / debt_solution / payment_reduction / repair_or_purpose
+```
+
+Он не должен означать:
+
+```text
+selected_route = BFL_RD
+selected_route = UNSECURED
+selected_route = MORTGAGE_AUX
+```
+
+Route выбирается только в `routes.select_route()`.
+
+### 9.3. Route-defining evidence
+
+Для продуктовых route нужны route-defining facts.
+
+Примеры:
+
+```text
+PTS:
+- explicit_pts_intent
+- has_car or car evidence
+- no vehicle hard refusal
+
+MORTGAGE:
+- explicit_mortgage_intent
+- or non-form property evidence + clear money/collateral intent
+- no property hard refusal
+
+BFL_RD:
+- debt_solution/payment_reduction evidence
+- total_debt known
+- monthly_payments known
+- stable income / income amount known
+- comfortable_payment or client_wants_to_pay evidence
+- no severe BFL_RI pressure
+
+BFL_RI:
+- severe debt pressure: MFO/collectors/arrears 2+ months/no stable income
+```
+
+Root facts from form are not enough to commit product route.
 
 ## 10. Route selection
 
@@ -535,7 +1043,11 @@ def select_route(frame: CaseFrame, state: DialogueV3State) -> str:
     ...
 ```
 
-### 10.2. Route order
+`select_route()` — единственный владелец `selected_route`.
+
+LLM, writer, response guard, tests, smoke evaluator, Playbook/Scenario catalog не выбирают route.
+
+### 10.2. Route order after docs alignment
 
 ```python
 def select_route(frame, state):
@@ -547,38 +1059,162 @@ def select_route(frame, state):
         return "REPEAT_VISIT"
 
     # 2. Hard impossible / conflict.
-    if hard_conflicting_constraints(frame):
+    if hard_conflicting_constraints(frame, state):
         return "OTHER"
 
-    # 3. Explicit product / obvious collateral.
-    if property_collateral_possible(frame):
-        if is_main_property_region(frame.property_region):
-            return "MORTGAGE_MAIN"
-        return "MORTGAGE_AUX"
-
-    if pts_possible(frame):
+    # 3. Explicit product intent.
+    # These can commit product route early because user named the product/collateral direction.
+    if explicit_pts_intent(frame, state) and pts_possible(frame, state):
         return "PTS"
 
-    # 4. Debt pressure.
+    if explicit_mortgage_intent(frame, state) and mortgage_possible(frame, state):
+        return mortgage_route(frame)
+
+    # 4. Severe debt pressure can commit BFL_RI.
     if severe_debt_pressure(frame):
         return "BFL_RI"
 
+    # 5. Restructuring debt pressure can commit BFL_RD only with enough evidence.
     if restructuring_debt_pressure(frame):
         return "BFL_RD"
 
-    # 5. Clean/simple credit.
+    # 6. Clean/simple credit can commit auxiliary route only with enough evidence.
     if unsecured_possible(frame):
         return "UNSECURED"
 
     if micro_possible(frame):
         return "MICRO"
 
-    return "OTHER"
+    # 7. Early ambiguous funnel.
+    # Generic money/debt/purpose requests go to DISCOVERY, not to a fake product route.
+    if early_funnel_needed(frame, state):
+        return "DISCOVERY"
+
+    # 8. Generic collateral fallback is allowed only with non-form evidence.
+    if property_collateral_possible_from_non_form_evidence(frame, state):
+        return mortgage_route(frame)
+
+    if pts_possible_from_non_form_evidence(frame, state):
+        return "PTS"
+
+    return "DISCOVERY"
 ```
 
-### 10.3. Important route semantics
+### 10.3. Explicit route semantics
 
-#### `OTHER` нельзя выбирать рано
+#### Explicit PTS
+
+Route `PTS` может выбираться сразу, если есть:
+
+```text
+под ПТС
+под авто
+под машину
+машину отдавать не буду
+машина нужна каждый день
+машина нужна для работы
+есть машина, хочу под неё
+```
+
+и есть `has_car=True` из формы или текст сам явно говорит про машину/авто/ПТС.
+
+#### Explicit mortgage
+
+Route `MORTGAGE_MAIN/MORTGAGE_AUX` может выбираться сразу, если есть:
+
+```text
+под квартиру
+под дом
+под недвижимость
+под залог недвижимости
+хочу рассмотреть под квартиру
+```
+
+`квартира есть` или `Тип актива = Недвижимость` без collateral intent не равно explicit mortgage.
+
+### 10.4. Generic early messages do not commit product routes
+
+Эти фразы не должны сразу давать `BFL_RD`, `MORTGAGE_AUX` или `PTS`:
+
+```text
+хочу взять денег
+нужны деньги
+можно оформить?
+хочу закрыть карты
+хочу закрыть долги
+снизить платеж
+на ремонт
+```
+
+Ожидаемое поведение:
+
+```text
+selected_route = DISCOVERY
+phase = DISCOVERY or COLLECTING_PRIMARY_GATES
+next_slot = need_type / total_debt / monthly_payments
+terminal_action = None
+```
+
+### 10.5. BFL_RD commit rule
+
+`BFL_RD` можно выбрать только после накопления debt/restructuring evidence:
+
+```text
+required:
+- debt_solution/payment_reduction signal
+- total_debt known
+- monthly_payments known
+- income_status or official_income known
+
+plus at least one:
+- comfortable_payment known
+- client_wants_to_pay
+- payment_gap_large
+- high_payment_load
+
+and not severe BFL_RI pressure.
+```
+
+Пример живой воронки:
+
+```text
+USER: Хочу взять денег
+→ DISCOVERY / need_type
+
+USER: Хочу закрыть долги, платежи тяжело тянуть
+→ DISCOVERY / total_debt
+
+USER: Около 1.7 млн
+→ DISCOVERY or BFL_RD provisional / monthly_payments
+
+USER: 78 тысяч в месяц
+→ DISCOVERY or BFL_RD / income_status
+
+USER: Доход 125 тысяч, работаю официально
+→ BFL_RD / comfortable_payment
+
+USER: 35 тысяч было бы нормально
+→ BFL_RD / delinquency_context
+
+USER: Просрочка около месяца. Банкротство не хочу, хочу платить
+→ BFL_RD / HANDOFF_BFL_SPECIALIST
+```
+
+### 10.6. BFL_RI commit rule
+
+`BFL_RI` выбирается при жёстком долговом давлении:
+
+```text
+- МФО + коллекторы;
+- МФО + просрочка 2+ месяца;
+- просрочка 2+ месяца + нет/нестабильный доход;
+- нет/нестабильный доход + высокая нагрузка + просрочки;
+- явные признаки неплатёжеспособности.
+```
+
+В таких случаях нельзя вести в `MICRO` или `UNSECURED` как “дать ещё займ”.
+
+### 10.7. `OTHER` нельзя выбирать рано
 
 `OTHER` можно выбрать только если:
 
@@ -593,67 +1229,14 @@ def select_route(frame, state):
 Есть недвижимость, но не знаем property_type → OTHER
 Есть машина, но не знаем год → OTHER
 Есть долговая нагрузка, но не знаем доход → OTHER
+Generic “хочу денег” → OTHER
 ```
 
 Правильно:
 
 ```text
-Спросить property_type.
-Спросить car_year.
-Спросить income_status.
+Спросить need_type / total_debt / property_type / car_year / income_status.
 ```
-
-#### “Машина нужна” не равно отказ от ПТС
-
-```python
-vehicle_requires_retention = True
-vehicle_refuses_transfer = True
-vehicle_refuses_collateral = False
-```
-
-Отказ от авто-залога только если явно:
-
-```text
-ПТС не рассматриваю
-не хочу залог на машину
-машина вообще не должна участвовать
-никаких автозалогов
-авто не трогаем
-```
-
-#### “Боюсь за квартиру” не равно отказ от залога недвижимости
-
-```python
-property_risk_concern = True
-property_refuses_collateral = False
-```
-
-Отказ только если:
-
-```text
-квартиру не трогаем
-залог недвижимости не рассматриваю
-не хочу использовать квартиру
-недвижимость не должна участвовать
-```
-
-#### “Банкротство пугает” не равно отказ от долговой процедуры
-
-```python
-client_fears_bankruptcy = True
-client_refuses_debt_procedure = False
-```
-
-Отказ только если:
-
-```text
-банкротство не рассматриваю
-суды не рассматриваю
-никаких процедур
-не хочу юридический разбор долгов
-```
-
----
 
 ## 11. RouteSession
 
@@ -681,12 +1264,26 @@ class RouteSession:
     reason_codes: list[str] = field(default_factory=list)
 ```
 
-### 11.1. Route lock
+### 11.1. `DISCOVERY` session semantics
+
+Для `DISCOVERY`:
+
+```text
+selected_route = DISCOVERY
+phase = DISCOVERY or COLLECTING_PRIMARY_GATES
+locked = False
+terminal_action = None
+primary_slots = [need_type] or [need_type, desired_amount_or_total_debt]
+```
+
+`DISCOVERY` не может создавать action event.
+
+### 11.2. Route lock
 
 Route можно lock, когда:
 
 ```text
-1. selected_route не service/fallback;
+1. selected_route не DISCOVERY/service/fallback;
 2. есть хотя бы 2-3 route-defining facts;
 3. нет hard blocker;
 4. пользователь не отверг route.
@@ -701,7 +1298,24 @@ Route меняется после lock только если:
 4. появились сильные новые факты, делающие route невозможным.
 ```
 
----
+### 11.3. asked_slots must be updated
+
+После успешного assistant answer engine должен записывать заданный слот:
+
+```python
+if route_session.next_slot:
+    state.asked_slots.append(route_session.next_slot)
+```
+
+Это нужно для contextual amount extraction:
+
+```text
+assistant asked total_debt → user: 1.7 млн → total_debt
+assistant asked monthly_payments → user: 78 тысяч → monthly_payments
+assistant asked comfortable_payment → user: 35 тысяч → comfortable_payment
+```
+
+Если `asked_slots` не обновляется, extraction начинает гадать по первой сумме в тексте и ломает живую воронку.
 
 ## 12. Intake plans
 
@@ -712,15 +1326,25 @@ Route меняется после lock только если:
 class IntakePlan:
     route: str
     primary_slots: list[str]
-    terminal_action: str
+    terminal_action: str | None
     max_questions: int
     allow_terminal_after_primary: bool = True
 ```
 
-### 12.1. Plans
+### 12.1. Plans after docs alignment
 
 ```python
 INTAKE_PLANS = {
+    "DISCOVERY": IntakePlan(
+        route="DISCOVERY",
+        primary_slots=[
+            "need_type",
+        ],
+        terminal_action=None,
+        max_questions=2,
+        allow_terminal_after_primary=False,
+    ),
+
     "MORTGAGE_MAIN": IntakePlan(
         route="MORTGAGE_MAIN",
         primary_slots=[
@@ -784,7 +1408,6 @@ INTAKE_PLANS = {
         route="BFL_RI",
         primary_slots=[
             "total_debt",
-            "monthly_payments",
             "income_status",
             "delinquency_context",
             "loan_types",
@@ -838,7 +1461,25 @@ INTAKE_PLANS = {
 }
 ```
 
----
+### 12.2. `need_type` belongs to DISCOVERY, not BFL_RD
+
+`need_type` не должен быть primary slot внутри `BFL_RD`, потому что это создаёт ложную семантику:
+
+```text
+generic “хочу взять денег”
+→ BFL_RD
+→ need_type
+```
+
+Правильно:
+
+```text
+generic “хочу взять денег”
+→ DISCOVERY
+→ need_type
+```
+
+После того как клиент сказал “закрыть долги/снизить платёж”, route может оставаться `DISCOVERY` до появления route-defining facts или перейти в `BFL_RD`, если уже есть enough evidence.
 
 ## 13. Slot resolver
 
@@ -1644,17 +2285,45 @@ Output:
 }
 ```
 
-Smoke scenarios:
+### 22.1. Smoke не должен закреплять неправильную семантику
+
+Запрещено ожидать:
+
+```python
+SmokeScenario(
+    scenario_id="generic_money_to_debt_funnel",
+    turns=["Хочу взять денег"],
+    expected_route="BFL_RD",
+)
+```
+
+Потому что generic “хочу взять денег” не является BFL_RD.
+
+Правильно:
+
+```python
+SmokeScenario(
+    scenario_id="generic_money_discovery",
+    turns=["Хочу взять денег"],
+    expected_route="DISCOVERY",
+    expected_next_slot="need_type",
+    expected_terminal_action=None,
+)
+```
+
+### 22.2. Minimal smoke scenarios
 
 ```python
 SMOKE_SCENARIOS = [
+    "discovery_001_generic_money",
+    "discovery_002_cards_repair_no_mortgage",
     "pts_002_resistant_driver",
     "pts_003_terse_family",
     "mortgage_main_001_calm_family",
     "mortgage_main_003_anxious_homeowner",
     "mortgage_main_005_region_not_supported",
-    "bfl_rd_001_stable_income",
-    "bfl_ri_001_mfo_pressure",
+    "bfl_rd_001_stable_income_multiturn",
+    "bfl_ri_001_mfo_pressure_multiturn",
     "other_003_conflicting_constraints",
     "repeat_visit_002_no_answer_from_manager",
     "fraud_check_001_sms_code",
@@ -1662,13 +2331,111 @@ SMOKE_SCENARIOS = [
 ]
 ```
 
-Не гонять 126 сценариев, пока эти 10-11 не стали стабильными.
+Не гонять 126 сценариев, пока эти 12-13 не стали стабильными.
 
----
+### 22.3. Required smoke invariants
+
+Smoke должен проверять не только final route, но и промежуточную семантику:
+
+```text
+- generic money → DISCOVERY / need_type / no terminal
+- cards+repair → DISCOVERY or debt funnel / total_debt / no property_type
+- explicit PTS → PTS / car_brand_model
+- explicit mortgage → MORTGAGE / property_type
+- BFL_RD appears only after debt/payment/income/comfort/wants_to_pay facts
+- BFL_RI appears with MFO/collectors/arrears/no stable income
+- off-topic does not execute request and returns to current next_slot
+- no handoff language without action event
+- terminal action creates event
+```
 
 ## 23. Tests
 
+Тесты должны проверять соответствие docs-воронке, а не только отсутствие старых багов.
+
+Плохие тесты:
+
+```text
+“Хочу взять денег” не спрашивает property_type → test passed
+```
+
+Недостаточно. Нужно ещё проверить, что trace не врёт:
+
+```text
+selected_route == DISCOVERY
+next_slot == need_type
+terminal_action is None
+```
+
 ### 23.1. Route tests
+
+#### Generic money request goes to DISCOVERY
+
+```python
+def test_generic_money_goes_to_discovery_not_bfl():
+    state = state_from_form({
+        "desired_amount": 645_467,
+        "has_current_loans": True,
+        "has_car": True,
+        "has_property": True,
+    })
+    result = engine.handle_turn("Хочу взять денег", state)
+
+    assert result.route_session.selected_route == "DISCOVERY"
+    assert result.route_session.next_slot == "need_type"
+    assert result.route_session.terminal_action is None
+```
+
+#### Cards + repair does not trigger mortgage and does not commit BFL too early
+
+```python
+def test_cards_repair_stays_in_debt_discovery():
+    result = engine.handle_turn("Хочу закрыть карты и немного оставить на ремонт", state)
+
+    assert result.route_session.selected_route in {"DISCOVERY", "BFL_RD"}
+    assert result.route_session.next_slot in {"total_debt", "monthly_payments"}
+    assert result.route_session.next_slot != "property_type"
+    assert result.route_session.next_slot != "car_brand_model"
+```
+
+If `BFL_RD` is allowed here, test must additionally assert it is not terminal-ready and not locked unless route-defining facts are already present.
+
+#### BFL_RD requires accumulated evidence
+
+```python
+def test_bfl_rd_requires_debt_payment_income_evidence():
+    state = state_from_form({"has_current_loans": True})
+
+    r1 = engine.handle_turn("Хочу взять денег", state)
+    assert r1.route_session.selected_route == "DISCOVERY"
+
+    r2 = engine.handle_turn("Хочу закрыть долги, платежи тяжело тянуть", r1.state)
+    assert r2.route_session.selected_route in {"DISCOVERY", "BFL_RD"}
+    assert r2.route_session.terminal_action is None
+
+    r3 = engine.handle_turn("Около 1.7 млн", r2.state)
+    r4 = engine.handle_turn("78 тысяч в месяц", r3.state)
+    r5 = engine.handle_turn("Доход 125 тысяч, работаю официально", r4.state)
+    r6 = engine.handle_turn("35 тысяч было бы нормально", r5.state)
+    r7 = engine.handle_turn("Просрочка около месяца. Банкротство не хочу, хочу платить", r6.state)
+
+    assert r7.route_session.selected_route == "BFL_RD"
+    assert r7.route_session.terminal_action == "HANDOFF_BFL_SPECIALIST"
+```
+
+#### BFL_RI severe pressure
+
+```python
+def test_bfl_ri_mfo_collectors_no_stable_income():
+    result = run_turns([
+        "Хочу закрыть долги",
+        "Около 2 млн, много МФО",
+        "Дохода стабильного нет, просрочка 3 месяца, коллекторы звонят",
+    ])
+
+    assert result.route_session.selected_route == "BFL_RI"
+    assert result.route_session.terminal_action == "HANDOFF_BFL_SPECIALIST"
+```
 
 #### PTS retention is not refusal
 
@@ -1718,21 +2485,83 @@ def test_fraud_override():
 #### OTHER not early
 
 ```python
-def test_other_not_selected_when_mortgage_slot_askable():
-    state = state_with_facts({
-        "desired_amount": 2_800_000,
-        "has_property": True,
-        "property_region": "Москва",
-    })
-    frame = build_case_frame(state)
-    route = select_route(frame, state)
-    session = build_route_session(route, state, frame)
-    assert route == "MORTGAGE_MAIN"
-    assert session.next_slot == "property_type"
-    assert session.terminal_action is None
+def test_other_not_selected_when_safe_question_exists():
+    result = engine.handle_turn("Хочу взять денег", state_from_form({}))
+    assert result.route_session.selected_route != "OTHER"
+    assert result.route_session.next_slot is not None
 ```
 
-### 23.2. Writer tests
+### 23.2. Fact extraction tests
+
+Нужно добавить `tests/dialogue_v3/test_fact_extraction_funnel.py`.
+
+Required tests:
+
+```text
+1. “Хочу закрыть карты и немного оставить на ремонт”:
+   - need_type == debt_solution
+   - purpose_goal == repair
+   - no explicit_mortgage_intent
+
+2. “Нужны деньги на ремонт”:
+   - early_need_signal in {new_money, repair_or_purpose}
+   - not explicit_mortgage_intent
+   - not has_property=True
+
+3. “Боюсь потерять квартиру”:
+   - property_risk_concern=True
+   - has_property is not forced True unless form already had it
+
+4. “Есть квартира в собственности”:
+   - has_property=True
+
+5. “Квартиры нет”:
+   - has_property=False
+
+6. “Хочу рассмотреть под квартиру”:
+   - explicit_mortgage_intent=True
+
+7. has_car=True + “Машину отдавать не буду, она каждый день нужна”:
+   - explicit_pts_intent=True
+   - vehicle_requires_retention=True
+   - vehicle_refuses_collateral=False
+
+8. No car context + “Она для работы”:
+   - no explicit_pts_intent
+   - no vehicle_requires_retention
+
+9. “Банкротство не хочу, хочу платить”:
+   - client_wants_to_pay=True
+   - client_fears_bankruptcy=True
+   - client_refuses_debt_procedure=False
+
+10. “Никаких судов и юридических процедур не хочу”:
+   - client_refuses_debt_procedure=True
+
+11. “Мне комфортно платить 35 тысяч”:
+   - has_mfo is not True
+   - comfortable_payment=35000
+
+12. “Есть МФО и просрочка”:
+   - has_mfo=True
+   - has_arrears=True
+
+13. Contextual amounts:
+   - last_asked_slot=total_debt, “1.7 млн” → total_debt=1700000
+   - last_asked_slot=monthly_payments, “78 тысяч” → monthly_payments=78000
+   - last_asked_slot=comfortable_payment, “35 тысяч” → comfortable_payment=35000
+```
+
+### 23.3. asked_slots tests
+
+```python
+def test_engine_records_asked_slots_after_assistant_question():
+    result = engine.handle_turn("Хочу взять денег", state)
+    assert result.route_session.next_slot == "need_type"
+    assert result.state.asked_slots[-1] == "need_type"
+```
+
+### 23.4. Writer tests
 
 #### Off-topic does not execute task
 
@@ -1740,14 +2569,13 @@ def test_other_not_selected_when_mortgage_slot_askable():
 def test_writer_does_not_write_python_code():
     move = ActorMove(
         move_type="handle_offtopic_then_ask",
-        selected_route="BFL_RD",
-        next_slot="total_debt",
+        selected_route="DISCOVERY",
+        next_slot="need_type",
         off_topic_kind="coding_request",
     )
     out = writer.write(move)
     assert "def " not in out.text
     assert "python" in out.text.lower() or "программ" in out.text.lower()
-    assert "долг" in out.text.lower()
 ```
 
 #### No handoff language without action
@@ -1774,8 +2602,6 @@ def test_terminal_move_creates_event():
     assert events[0].action_id == "HANDOFF_EXPERT"
 ```
 
----
-
 ## 24. Hard invariants
 
 Все эти invariants должны быть тестами.
@@ -1784,24 +2610,34 @@ def test_terminal_move_creates_event():
 1. В каждом turn ровно один selected_route.
 2. LLM не выбирает selected_route.
 3. LLM не выбирает terminal_action.
-4. OTHER не выбирается, если есть askable primary slot у жизнеспособного product route.
-5. “Машина нужна” не равно отказ от ПТС.
-6. “Квартиру боюсь потерять” не равно отказ от залога.
-7. “Банкротство пугает” не равно отказ от долгового разбора.
-8. Terminal action невозможен до закрытия primary slots, кроме service flows.
-9. Если assistant говорит “передам”, есть action event.
-10. Если terminal_action отсутствует, assistant не говорит “передам”.
-11. Fraud flow не задаёт продуктовые вопросы.
-12. Repeat flow не запускает полную анкету без причины.
-13. Writer не выполняет off-topic requests.
-14. Writer не использует internal terms.
-15. Writer не задаёт больше одного вопроса.
-16. Empty assistant response невозможен.
-17. Fallback не продаёт продукт.
-18. Response guard не принимает бизнес-решения.
+4. OTHER не выбирается, если есть askable safe question.
+5. Generic “хочу взять денег” не выбирает BFL_RD/MORTGAGE/PTS.
+6. Generic early request идёт в DISCOVERY или phase=DISCOVERY с non-committed route.
+7. Root form asset facts не коммитят collateral route.
+8. Explicit PTS коммитит PTS.
+9. Explicit mortgage коммитит MORTGAGE_MAIN/AUX.
+10. BFL_RD нельзя выбирать без debt/payment/income evidence.
+11. BFL_RI должен перебивать кредитные route при severe debt pressure.
+12. “Машина нужна” не равно отказ от ПТС.
+13. “Квартиру боюсь потерять” не равно отказ от залога.
+14. “Банкротство пугает” не равно отказ от долгового разбора.
+15. “Хочу платить” не равно hard refusal of legal debt procedure.
+16. Terminal action невозможен до закрытия primary slots, кроме service flows.
+17. Если assistant говорит “передам”, есть action event.
+18. Если terminal_action отсутствует, assistant не говорит “передам”.
+19. Fraud flow не задаёт продуктовые вопросы.
+20. Repeat flow не запускает полную анкету без причины.
+21. Writer не выполняет off-topic requests.
+22. Writer не использует internal terms.
+23. Writer не задаёт больше одного вопроса.
+24. Empty assistant response невозможен.
+25. Fallback не продаёт продукт.
+26. Response guard не принимает бизнес-решения.
+27. asked_slots обновляется после каждого assistant question.
+28. Contextual amount extraction использует asked_slots first.
+29. conflicting facts не закрывают slots.
+30. Smoke scenarios не должны закреплять known-bad semantics ради зелёного отчёта.
 ```
-
----
 
 ## 25. Что запрещено делать Codex
 
@@ -1932,31 +2768,40 @@ streamlit run app_v3.py
 ```text
 1. app_v3.py запускается.
 2. В UI можно писать сообщения и видеть ответы.
-3. В UI виден trace: selected_route, next_slot, terminal_action, events.
-4. PTS не ломается на фразе “машину отдавать не буду”.
-5. Mortgage не уходит в OTHER из-за страха за квартиру.
-6. BFL_RD/BFL_RI дают HANDOFF_BFL_SPECIALIST после primary slots.
-7. Fraud сразу уходит в SECURITY_FLOW.
-8. Repeat не запускает полную анкету.
-9. Off-topic Python не выполняется, а обрабатывается живо.
-10. В ответах нет route/scenario/gate/manual_review/BFL_RI/AUTO_AUX.
-11. Нет пустых ответов.
-12. Нет “передам” без action event.
-13. Smoke runner показывает стабильный trace по 10-11 сценариям.
+3. В UI виден trace: selected_route, phase, next_slot, terminal_action, events.
+4. После формы появляется assistant opening message, а не системная инструкция “напишите первое сообщение”.
+5. Generic “хочу взять денег” не превращается в BFL_RD/MORTGAGE/PTS.
+6. Generic “хочу взять денег” ведёт в DISCOVERY / need_type.
+7. Root form has_property/has_car не запускает property_type/car_brand_model без явного intent.
+8. “Хочу закрыть карты и немного на ремонт” ведёт в debt discovery/total_debt, а не mortgage.
+9. PTS не ломается на фразе “машину отдавать не буду”.
+10. Mortgage не уходит в OTHER из-за страха за квартиру.
+11. BFL_RD появляется после debt/payment/income/comfort/wants_to_pay evidence.
+12. BFL_RI появляется при MFO/collectors/arrears/no stable income.
+13. BFL_RD/BFL_RI дают HANDOFF_BFL_SPECIALIST после primary slots.
+14. Fraud сразу уходит в SECURITY_FLOW.
+15. Repeat не запускает полную анкету.
+16. Off-topic Python не выполняется, а обрабатывается живо.
+17. В ответах нет route/scenario/gate/manual_review/BFL_RI/AUTO_AUX/DISCOVERY.
+18. Нет пустых ответов.
+19. Нет “передам” без action event.
+20. asked_slots обновляется.
+21. Contextual amount extraction работает в multi-turn BFL flow.
+22. Smoke runner показывает стабильный trace по minimal scenario set.
 ```
-
----
 
 ## 28. Definition of Done для v3 MVP
 
 MVP готов, когда:
 
 ```text
-Route correctness smoke: >= 9/11
-Terminal correctness smoke: >= 9/11
+Route correctness smoke: >= 11/13
+Terminal correctness smoke: >= 11/13
+Discovery semantics: 100% for generic early turns
+No false product commitment on root form facts: 100%
 No empty response: 100%
 No internal words: 100%
-No early OTHER on product routes: 100%
+No early OTHER on product/discovery routes: 100%
 Off-topic safety: 100%
 Manual UI usable: yes
 Trace export: yes
@@ -1973,7 +2818,14 @@ Off-topic — живой redirect.
 Финал — понятный следующий шаг.
 ```
 
----
+Scenario-map check:
+
+```text
+- Основные сценарии не выбираются без route-defining evidence.
+- Вспомогательные сценарии не подменяют долговой разбор при severe debt pressure.
+- Служебные сценарии перебивают продуктовый intake.
+- Target/delivery mapping совпадает с выбранным route/action.
+```
 
 ## 29. Конечный результат
 
@@ -2225,5 +3077,233 @@ Do not overbuild UI. It is a manual debug cockpit, not production frontend.
 не обещает лишнего
 не петляет
 правильно передаёт дальше
+```
+
+---
+
+## 34. Audit correction — где текущая реализация расходилась с видением
+
+Этот раздел фиксирует результат аудита текущего `MBK_v3` после появления funnel-routing правок.
+
+### 34.1. Что было правильно
+
+```text
+- pipeline v3 в целом правильный: facts → CaseFrame → select_route → RouteSession → ActorMove → writer → guard → event;
+- LLM не владеет route/action;
+- UI root-form логика близка к Input + Qualification.csv;
+- docs/playbook не подключены как runtime;
+- opening message после формы — правильное направление;
+- explicit PTS и explicit mortgage начали отделяться от generic asset facts.
+```
+
+### 34.2. Что было неправильно
+
+```text
+1. Generic “Хочу взять денег” мог давать selected_route=BFL_RD.
+2. Smoke/test ожидали BFL_RD для generic money request.
+3. route использовался как временный corridor.
+4. Фразовые паттерны в facts.py начали подменять модель воронки.
+5. Tests проверяли “не property_type”, но не проверяли честность selected_route.
+6. asked_slots существовал в state, но должен явно обновляться после assistant question.
+7. conflict merge мог оставлять conflicting value usable.
+8. action payload пока не отражает Target.csv delivery profile.
+9. UI ещё не полностью соответствует собственной спецификации: writer mode selector, assistant name, scenario presets.
+```
+
+### 34.3. Главная поправка
+
+```text
+selected_route должен быть честным.
+Если продукт ещё не выбран, нужен DISCOVERY / phase=DISCOVERY.
+Нельзя использовать BFL_RD как early funnel container.
+```
+
+---
+
+## 35. Четвёртый task prompt для Codex — docs-aligned routing semantics
+
+```text
+Ты senior Python engineer / ML engineer. Работаешь в репозитории Zheltenkov/MBK_v3.
+
+Нужно привести текущий dialogue_v3 в соответствие с docs/cs_scenario.jpg, Input + Qualification.csv, Target.csv, Red Flags and Fit-cases.csv и обновлённой спецификацией.
+
+Главная проблема:
+Текущие тесты зелёные, но часть из них закрепляет неправильную семантику:
+generic “Хочу взять денег” сейчас может ожидать/получать BFL_RD, хотя BFL_RD — это продуктовый сценарий судебной реструктуризации, а не ранний discovery-коридор.
+
+Задача:
+Сделать так, чтобы early funnel не загрязнял selected_route продуктовыми route до появления route-defining evidence.
+
+Не добавлять:
+- PlaybookEngine
+- ScenarioSelector
+- docs loader
+- route_score
+- LLM planner
+- graph layer
+- dialogue_v2
+
+Разрешено:
+- добавить technical non-product route DISCOVERY;
+- routes.py;
+- intake_plans.py;
+- slot_resolver.py;
+- route_session.py минимально;
+- facts.py только для raw observations;
+- state.py/engine.py для asked_slots;
+- tests;
+- smoke scenarios.
+
+Acceptance:
+
+1. “Хочу взять денег” после формы:
+   expected:
+   - selected_route == DISCOVERY
+   - next_slot == need_type
+   - terminal_action is None
+   - no BFL/MORTGAGE/PTS product commitment
+
+2. “Хочу закрыть карты и немного на ремонт”:
+   expected:
+   - no property_type
+   - no car slot
+   - ask total_debt/monthly_payments
+   - route not committed to BFL_RD until enough debt/payment evidence
+
+3. BFL_RD appears only after:
+   - debt_solution/payment_reduction evidence
+   - total_debt known
+   - monthly_payments known
+   - income_status/official_income known
+   - comfortable_payment or wants_to_pay evidence
+   - no severe BFL_RI pressure
+
+4. BFL_RI appears with:
+   - MFO and/or collectors
+   - arrears >= 2 months or severe pressure
+   - no stable income / unstable income
+
+5. Explicit PTS still routes to PTS immediately.
+
+6. Explicit mortgage still routes to MORTGAGE_MAIN/AUX immediately.
+
+7. asked_slots is updated after every assistant question.
+
+8. contextual amount extraction uses asked_slots first.
+
+9. conflicting facts do not silently close slots.
+
+10. Smoke expectations updated:
+   - no expected_route=BFL_RD for generic “Хочу взять денег”.
+
+Run:
+python -m pytest tests/dialogue_v3 -q
+python tools/run_dialogue_v3_smoke.py --writer-mode deterministic
+python tools/run_dialogue_v3_smoke.py --writer-mode llm_guarded --fail-on-violations
+
+After implementation show:
+- changed files
+- why DISCOVERY/provisional route was or was not added
+- traces:
+  1. generic money request
+  2. cards + repair
+  3. explicit PTS
+  4. explicit mortgage
+  5. BFL_RD multi-turn
+  6. BFL_RI multi-turn
+- updated smoke expectations
+- test results
+```
+
+---
+
+## 36. Пятый task prompt для Codex — clean fact extraction without scenario leakage
+
+```text
+Ты senior Python engineer / ML engineer. Работаешь в Zheltenkov/MBK_v3.
+
+Нужно привести facts.py после funnel-routing правок в аккуратное состояние.
+
+Проблема:
+facts.py начал превращаться в хрупкий набор строковых if-ов:
+- scattered phrase lists;
+- дублирующиеся условия;
+- ранние return, которые теряют другие сигналы;
+- “квартира/дом” может ошибочно стать has_property=True;
+- “ремонт” может перебить debt intent;
+- “хочу платить” может ошибочно стать client_refuses_debt_procedure;
+- суммы могут извлекаться без context last_asked_slot;
+- фразы типа “она для работы” могут трактоваться как PTS без проверки, что речь об авто.
+
+Нужно не добавлять новый слой, а аккуратно структурировать deterministic extraction.
+
+Запрещено:
+- не добавлять LLM extractor как обязательный decision layer;
+- не добавлять ScenarioSelector;
+- не добавлять PlaybookEngine;
+- не читать docs/playbook/cs_scenario в runtime;
+- не переносить routing logic в facts.py;
+- не добавлять route_score;
+- не менять selected_route вне routes.select_route().
+
+Разрешено:
+- facts.py;
+- case_frame.py только если нужны аккуратные compact fields;
+- engine.py/state.py только если нужно передать state/last_asked_slot или обновлять asked_slots;
+- tests/dialogue_v3;
+- smoke scenarios, если нужно.
+
+Цель:
+facts.py должен извлекать факты и сигналы, но не принимать route/action решения.
+
+Tasks:
+
+1. Разделить extraction на этапы:
+   - normalize_text
+   - extract_service_signals
+   - extract_need_signals
+   - extract_collateral_signals
+   - extract_debt_signals
+   - extract_amounts_with_context
+   - derive_secondary_flags
+
+2. Убрать dangerous early returns.
+
+3. Не ставить has_property=True от любого слова квартира/дом.
+
+4. Сделать vehicle retention context-aware.
+
+5. Исправить debt procedure semantics:
+   - “хочу платить” → client_wants_to_pay=True
+   - “банкротство не хочу” → fear/resistance, not hard refusal
+   - hard refusal только для “никаких судов/процедур”.
+
+6. Amount extraction must use last_asked_slot.
+
+7. Replace scattered phrase lists with declarative constants.
+
+8. Add fact extraction tests:
+   - repair does not override debt;
+   - property mention is not ownership;
+   - vehicle pronoun only with car context;
+   - wants_to_pay not hard refusal;
+   - MFO token safety;
+   - contextual amounts.
+
+Run:
+python -m pytest tests/dialogue_v3 -q
+python tools/run_dialogue_v3_smoke.py --writer-mode deterministic
+python tools/run_dialogue_v3_smoke.py --writer-mode llm_guarded --fail-on-violations
+
+After implementation show:
+- changed files;
+- extraction stages;
+- examples:
+  - “Хочу закрыть карты и немного на ремонт”
+  - “Боюсь потерять квартиру”
+  - “Машину отдавать не буду”
+  - “Банкротство не хочу, хочу платить”
+  - contextual amounts in BFL_RD flow
+- pytest/smoke results.
 ```
 

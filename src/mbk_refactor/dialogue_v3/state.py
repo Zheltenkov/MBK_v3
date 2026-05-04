@@ -32,6 +32,7 @@ class DialogueV3State:
     accepted_route: str | None = None
     service_mode: str = "normal_credit_case"
     trace_history: list[dict[str, object]] = field(default_factory=list)
+    emitted_terminal_actions: set[str] = field(default_factory=set)
 
     def add_user_message(self, content: str) -> None:
         """Persist the user turn after the engine advances turn_index."""

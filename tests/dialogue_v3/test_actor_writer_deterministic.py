@@ -22,10 +22,80 @@ def test_deterministic_ask_slot_returns_short_single_question_without_api_key() 
     output = writer.write(move=move)
     validation = ResponseGuard().validate(output=output, move=move)
 
-    assert output.body == ""
+    assert output.body
+    assert "авто" in output.body.lower()
     assert "машина" in output.followup_question.lower()
     assert output.text.count("?") == 1
     assert validation.accepted
+
+
+def test_deterministic_debt_slots_are_manager_like_not_bare_questionnaire() -> None:
+    writer = ActorWriter(mode="deterministic")
+
+    total_debt = writer.write(
+        move=ActorMove(
+            move_type="ask_slot",
+            selected_route="DISCOVERY",
+            phase="DISCOVERY",
+            next_slot="total_debt",
+        )
+    )
+    monthly = writer.write(
+        move=ActorMove(
+            move_type="ask_slot",
+            selected_route="DISCOVERY",
+            phase="DISCOVERY",
+            next_slot="monthly_payments",
+        )
+    )
+    income = writer.write(
+        move=ActorMove(
+            move_type="ask_slot",
+            selected_route="DISCOVERY",
+            phase="DISCOVERY",
+            next_slot="income_status",
+        )
+    )
+
+    assert "не добирать лишнего вслепую" in total_debt.body.lower()
+    assert "сколько сейчас всего задолженности" in total_debt.followup_question.lower()
+    assert "какой общий размер задолженности" not in total_debt.text.lower()
+    assert "зафиксировал сумму" in monthly.body.lower()
+    assert monthly.followup_question == "Сколько сейчас уходит в месяц на платежи?"
+    assert "по кредитам и долгам" not in monthly.followup_question.lower()
+    assert "давит на бюджет" in income.body.lower()
+    assert income.followup_question == "Какой у вас сейчас доход в месяц и он официальный?"
+    assert "официальный, неофициальный" not in income.text.lower()
+
+
+def test_deterministic_followup_slots_cover_debt_and_car_flow() -> None:
+    writer = ActorWriter(mode="deterministic")
+    slots = [
+        "need_type",
+        "total_debt",
+        "monthly_payments",
+        "income_status",
+        "comfortable_payment",
+        "delinquency_context",
+        "car_brand_model",
+        "car_year",
+        "car_owner",
+        "car_pledge_or_restrictions",
+    ]
+
+    for slot in slots:
+        move = ActorMove(
+            move_type="ask_slot",
+            selected_route="DISCOVERY",
+            phase="COLLECTING_PRIMARY_GATES",
+            next_slot=slot,
+        )
+        output = writer.write(move=move)
+
+        assert output.body
+        assert output.followup_question
+        assert output.text.count("?") == 1
+        assert ResponseGuard().validate(output=output, move=move).accepted
 
 
 def test_vehicle_retention_response_does_not_guarantee_car_retention() -> None:
@@ -163,6 +233,23 @@ def test_handoff_expert_terminal_wording_can_handoff_to_specialist() -> None:
 
     assert "передам" in output.body.lower()
     assert "специалист" in output.body.lower()
+    assert "базовые данные собраны" not in output.body.lower()
+    assert ResponseGuard().validate(output=output, move=move).accepted
+
+
+def test_mortgage_terminal_wording_is_specific_not_generic_basic_data() -> None:
+    writer = ActorWriter(mode="deterministic")
+    move = ActorMove(
+        move_type="terminal_action",
+        selected_route="MORTGAGE_MAIN",
+        phase="READY_FOR_TERMINAL",
+        terminal_action="HANDOFF_EXPERT",
+    )
+
+    output = writer.write(move=move)
+
+    assert "недвижимости" in output.body.lower()
+    assert "базовые данные собраны" not in output.body.lower()
     assert ResponseGuard().validate(output=output, move=move).accepted
 
 
@@ -180,6 +267,41 @@ def test_bfl_handoff_terminal_wording_mentions_debt_specialist() -> None:
     assert "специалисту по долгам" in output.body.lower()
     assert "базовые данные собраны" not in output.body.lower()
     assert ResponseGuard().validate(output=output, move=move).accepted
+
+
+def test_llm_writer_payload_contains_runtime_context_for_manager_like_wording() -> None:
+    calls: list[list[dict[str, str]]] = []
+
+    def fake_client(messages: list[dict[str, str]]) -> str:
+        calls.append(messages)
+        return json.dumps(
+            {
+                "body": "Понял. Тогда сначала считаем нагрузку, а не добираем новый кредит вслепую.",
+                "followup_question": "Сколько сейчас всего долгов?",
+            },
+            ensure_ascii=False,
+        )
+
+    from mbk_refactor.dialogue_v3.engine import DialogueV3Engine
+
+    result = DialogueV3Engine(
+        writer_mode="llm",
+        actor_writer=ActorWriter(mode="llm", llm_client=fake_client),
+    ).handle_turn("Хочу закрыть долги, платежи тяжело тянуть")
+
+    payload = json.loads(calls[0][-1]["content"])
+    context = payload["writer_context"]
+
+    assert result.route_session.next_slot == "total_debt"
+    assert context["latest_user_message"] == "Хочу закрыть долги, платежи тяжело тянуть"
+    assert context["newly_extracted_facts"]["need_type"] == "debt_solution"
+    assert context["selected_route"] == result.route_session.selected_route
+    assert context["move_type"] == result.actor_move.move_type
+    assert context["next_slot"] == "total_debt"
+    assert context["terminal_action"] is None
+    assert context["terminal_action_already_emitted"] is False
+    assert "клиент хочет закрыть долги" in context["conversation_summary"]
+    assert "slot_wording_hints" in payload
 
 
 def test_llm_mode_uses_injected_client_without_route_ownership() -> None:

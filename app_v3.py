@@ -4,6 +4,9 @@ Run with:
 
     streamlit run app_v3.py
 
+Environment: variables from ``.env`` in the project root are loaded at startup
+(``OPENAI_API_KEY``, ``MBK_V3_MODEL_NAME``, etc.) via python-dotenv.
+
 The UI is intentionally thin: it collects a manual form, calls DialogueV3Engine
 for every user turn, and renders chat/debug/export state. It does not own route,
 terminal action, or writer validation decisions.
@@ -21,8 +24,11 @@ from typing import Any
 from uuid import uuid4
 
 import streamlit as st
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")
+
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -40,7 +46,7 @@ from mbk_refactor.dialogue_v3.ui_form_schema import (
 
 ARTIFACTS_DIR = ROOT / "artifacts"
 WRITER_MODE = "llm_guarded"
-DEFAULT_MODEL_NAME = os.getenv("MBK_V3_MODEL_NAME") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+DEFAULT_MODEL_NAME = os.getenv("MBK_V3_MODEL_NAME") or os.getenv("OPENAI_MODEL") or "gpt-5.4-mini"
 
 
 SESSION_RESET_DEFAULTS: dict[str, Any] = {

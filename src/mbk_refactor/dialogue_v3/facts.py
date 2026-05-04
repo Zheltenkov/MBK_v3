@@ -51,15 +51,58 @@ SERVICE_FRAUD_PATTERNS = (
     "ao_mbk",
 )
 SERVICE_REPEAT_PATTERNS = (
+    "я уже оставлял заявку",
+    "я уже оставляла заявку",
+    "я уже переходил в чат",
+    "я уже переходила в чат",
+    "мне не ответили",
+    "вам и не ответили",
+    "со мной не связались",
+    "продолжить заявку",
+    "продолжить прошлую заявку",
+    "по старой заявке",
+    "прошлую заявку",
+)
+SERVICE_REPEAT_SELF_REFERENCE_PATTERNS = (
     "я уже обращался",
     "я уже обращалась",
-    "я уже писал",
-    "я уже писала",
-    "мне не ответили",
-    "продолжить заявку",
-    "по старой заявке",
+    "ранее обращался",
+    "ранее обращалась",
     "раньше обращалась",
     "раньше обращался",
+)
+ACTIVE_DIALOG_CORRECTION_PATTERNS = (
+    "я уже писал",
+    "я уже писала",
+    "я уже написал",
+    "я уже написала",
+    "я уже говорил",
+    "я уже говорила",
+    "я уже отвечал",
+    "я уже отвечала",
+    "уже писал",
+    "уже писала",
+    "уже написал",
+    "уже написала",
+    "уже говорил",
+    "уже говорила",
+    "уже отвечал",
+    "уже отвечала",
+    "я же сказал",
+    "я же сказала",
+    "выше написал",
+    "выше написала",
+    "я это уже указал",
+    "я это уже указала",
+    "это уже указал",
+    "это уже указала",
+    "повторяю",
+    "как писал",
+    "как писала",
+    "как говорил",
+    "как говорила",
+)
+REPEAT_CASE_CHANGE_PATTERNS = (
     "изменился доход",
     "появились просрочки",
 )
@@ -84,18 +127,35 @@ MONEY_REQUEST_PATTERNS = (
 DEBT_SOLUTION_PATTERNS = (
     "закрыть карты",
     "закрыть карту",
+    "закрыть кредитные карты",
+    "закрыть кредитную карту",
+    "закрыть кредитки",
+    "закрыть кредитку",
+    "погасить карты",
+    "погасить кредитки",
     "закрыть кредиты",
     "закрыть кредит",
     "закрыть долги",
     "закрыть долг",
+    "перекрыть долги",
+    "перекрыть долг",
+    "объединить кредиты",
+    "рефинансироваться",
 )
 PAYMENT_REDUCTION_PATTERNS = (
     "снизить платеж",
     "снизить ежемесячный платеж",
+    "уменьшить платеж",
+    "уменьшить ежемесячный платеж",
+    "снизить нагрузку",
+    "уменьшить нагрузку",
     "платеж меньше",
     "платежи тяжело тянуть",
     "тяжело тянуть платеж",
     "платить тяжело",
+    "не вывожу платежи",
+    "не вывожу кредиты",
+    "не вывожу долги",
 )
 REPAIR_PURPOSE_PATTERNS = ("ремонт",)
 
@@ -244,9 +304,31 @@ NEED_TYPE_BY_SIGNAL = {
     "security": "security",
 }
 
-AMOUNT_PATTERN = re.compile(r"(\d+(?:[,.]\d+)?)\s*(млн|миллион|миллиона|тыс|к|руб|₽)?")
+AMOUNT_PATTERN = re.compile(
+    r"(\d+(?:[,.]\d+)?)\s*(млн|миллион|миллиона|миллионов|тыс|тысяч|к|руб|₽)?"
+)
+COMPOSITE_MILLION_THOUSAND_PATTERN = re.compile(
+    r"(\d+(?:[,.]\d+)?)\s*(млн|миллион|миллиона|миллионов)\s+"
+    r"(\d+(?:[,.]\d+)?)\s*(тыс|тысяч|к)\b"
+)
+AMOUNT_RANGE_PATTERN = re.compile(
+    r"(\d+(?:[,.]\d+)?)\s*[-–—]\s*(\d+(?:[,.]\d+)?)\s*"
+    r"(млн|миллион|миллиона|тыс|тысяч|к|руб|₽)?"
+)
 RAW_CAR_PATTERN = re.compile(r"\b(kia rio|hyundai tucson|лада веста|toyota camry|ваз \d{4})\b")
 YEAR_PATTERN = re.compile(r"\b(19[8-9]\d|20[0-2]\d)\b")
+DEBT_SOLUTION_REGEXES = (
+    re.compile(
+        r"\b(закрыть|погасить|перекрыть)\b.{0,50}"
+        r"\b(кредитн\w*\s+карт\w*|карт\w*|кредитк\w*|кредит\w*|долг\w*)\b"
+    ),
+    re.compile(r"\b(объединить|рефинансир\w*)\b.{0,50}\b(кредит\w*|долг\w*|карт\w*)\b"),
+    re.compile(r"\bрефинансироваться\b"),
+)
+PAYMENT_REDUCTION_REGEXES = (
+    re.compile(r"\b(снизить|уменьшить)\b.{0,40}\b(платеж\w*|нагрузк\w*)\b"),
+    re.compile(r"\b(тяжело|не вывожу)\b.{0,50}\b(платеж\w*|кредит\w*|долг\w*)\b"),
+)
 
 
 def merge_fact(old: FactValue | None, new: FactValue) -> FactValue:
@@ -294,7 +376,7 @@ def extract_turn(
     facts: dict[str, Any] = {"last_user_text": user_message}
     concerns: list[str] = []
 
-    service_signal, off_topic = extract_service_signals(text, facts, concerns)
+    service_signal, off_topic = extract_service_signals(text, facts, concerns, state)
     extract_need_signals(text, facts)
     extract_collateral_signals(text, facts, concerns, state)
     extract_debt_signals(text, facts, concerns)
@@ -325,6 +407,7 @@ def extract_service_signals(
     text: str,
     facts: dict[str, Any],
     concerns: list[str],
+    state: DialogueV3State | None = None,
 ) -> tuple[str | None, str | None]:
     """Extract service-mode and off-topic signals without product routing."""
 
@@ -333,10 +416,12 @@ def extract_service_signals(
         service_signal = "fraud_check"
         facts["service_signal"] = service_signal
         _set_need_signal(facts, "security")
-    elif _contains_any(text, SERVICE_REPEAT_PATTERNS):
+    elif _is_repeat_visit_signal(text, state):
         service_signal = "repeat_visit"
         facts["service_signal"] = service_signal
         _set_need_signal(facts, "repeat")
+    elif state is not None and state.turn_index > 1 and _contains_any(text, ACTIVE_DIALOG_CORRECTION_PATTERNS):
+        facts["correction_signal"] = True
 
     off_topic: str | None = None
     if _contains_any(text, OFF_TOPIC_PATTERNS):
@@ -352,12 +437,12 @@ def extract_service_signals(
 def extract_need_signals(text: str, facts: dict[str, Any]) -> None:
     """Extract broad need signals; priorities prevent weaker purpose words from overriding debt."""
 
-    if _contains_any(text, DEBT_SOLUTION_PATTERNS):
+    if _contains_any(text, DEBT_SOLUTION_PATTERNS) or _matches_any_regex(text, DEBT_SOLUTION_REGEXES):
         _set_need_signal(facts, "debt_solution")
-    if _contains_any(text, PAYMENT_REDUCTION_PATTERNS):
+    if _contains_any(text, PAYMENT_REDUCTION_PATTERNS) or _matches_any_regex(text, PAYMENT_REDUCTION_REGEXES):
         _set_need_signal(facts, "payment_reduction")
     if _contains_any(text, REPAIR_PURPOSE_PATTERNS):
-        facts["purpose_goal"] = "repair"
+        facts["purpose_goal"] = "car_repair" if _contains_any(text, ("ремонт машины", "ремонт авто")) else "repair"
         _set_need_signal(facts, "repair_or_purpose")
     if _contains_any(text, MONEY_REQUEST_PATTERNS):
         _set_need_signal(facts, "new_money")
@@ -426,9 +511,14 @@ def extract_debt_signals(text: str, facts: dict[str, Any], concerns: list[str]) 
     if _contains_any(text, DEBT_PROCEDURE_HARD_REFUSAL_PATTERNS):
         facts["client_refuses_debt_procedure"] = True
 
-    if _contains_any(text, DEBT_SOLUTION_PATTERNS) or has_mfo_signal or _contains_any(text, ("коллектор", "банкрот", "долг", "долги")):
+    if (
+        _contains_any(text, DEBT_SOLUTION_PATTERNS)
+        or _matches_any_regex(text, DEBT_SOLUTION_REGEXES)
+        or has_mfo_signal
+        or _contains_any(text, ("коллектор", "банкрот", "долг", "долги"))
+    ):
         facts["need_type"] = "debt_solution"
-    elif _contains_any(text, PAYMENT_REDUCTION_PATTERNS):
+    elif _contains_any(text, PAYMENT_REDUCTION_PATTERNS) or _matches_any_regex(text, PAYMENT_REDUCTION_REGEXES):
         facts["need_type"] = "payment_reduction"
     elif _contains_any(text, MONEY_REQUEST_PATTERNS):
         facts["need_type"] = "new_money"
@@ -451,16 +541,17 @@ def extract_amounts_with_context(
     if total_debt is not None:
         facts["total_debt"] = total_debt
 
-    monthly_payments = _find_amount_near(text, ("плачу", "платеж", "платежи"))
-    if monthly_payments is None and last_slot == "monthly_payments":
-        monthly_payments = _first_contextual_amount(text)
-    elif monthly_payments is None and _contains_any(text, ("в месяц", "ежемесячно")):
-        monthly_payments = _first_contextual_amount(text)
-    if monthly_payments is not None:
-        facts["monthly_payments"] = monthly_payments
+    if _can_extract_monthly_payment(text, last_slot):
+        monthly_payments = _find_amount_near(text, ("плачу", "платеж", "платежи"))
+        if monthly_payments is None and last_slot == "monthly_payments":
+            monthly_payments = _first_contextual_amount(text)
+        elif monthly_payments is None and _contains_any(text, ("в месяц", "ежемесячно")):
+            monthly_payments = _first_contextual_amount(text)
+        if monthly_payments is not None:
+            facts["monthly_payments"] = monthly_payments
 
     comfortable_payment = _find_amount_near(text, ("комфортно", "могу платить"))
-    if comfortable_payment is None and last_slot == "comfortable_payment":
+    if comfortable_payment is None and last_slot == "comfortable_payment" and not _looks_like_payment_correction(text):
         comfortable_payment = _first_contextual_amount(text)
     elif comfortable_payment is None and _contains_any(
         text,
@@ -586,12 +677,17 @@ def _extract_income_amount(text: str, facts: dict[str, Any], last_slot: str | No
         facts["income_status"] = "none"
         return
 
+    if not _can_extract_official_income(text, last_slot):
+        return
+
     income = _find_amount_near(text, ("доход", "заработ", "получаю"))
     if income is None and (
         last_slot == "income_status" or _contains_any(text, STABLE_INCOME_PATTERNS)
     ):
         income = _first_contextual_amount(text)
     if income is not None:
+        if income < 1_000 and (last_slot == "income_status" or _contains_any(text, STABLE_INCOME_PATTERNS)):
+            income *= 1_000
         facts["official_income"] = income
         facts["income_status"] = "stable"
     elif last_slot == "income_status" and _contains_any(text, STABLE_INCOME_PATTERNS):
@@ -629,6 +725,66 @@ def _set_need_signal(facts: dict[str, Any], signal: str) -> None:
 
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in text for pattern in patterns)
+
+
+def _matches_any_regex(text: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
+    return any(pattern.search(text) for pattern in patterns)
+
+
+def _is_repeat_visit_signal(text: str, state: DialogueV3State | None) -> bool:
+    if _contains_any(text, SERVICE_REPEAT_PATTERNS):
+        return True
+    if _contains_any(text, REPEAT_CASE_CHANGE_PATTERNS):
+        return state is None or state.turn_index <= 1
+    if not _contains_any(text, SERVICE_REPEAT_SELF_REFERENCE_PATTERNS):
+        return False
+    if state is not None and state.turn_index > 1 and _contains_any(text, ACTIVE_DIALOG_CORRECTION_PATTERNS):
+        return False
+    return state is None or state.turn_index <= 1
+
+
+def _has_income_context(text: str, last_slot: str | None) -> bool:
+    return bool(
+        last_slot == "income_status"
+        or _contains_any(text, ("доход", "заработ", "зарплат", "получаю"))
+        or _contains_any(text, STABLE_INCOME_PATTERNS)
+        or _contains_any(text, NO_STABLE_INCOME_PATTERNS + NO_OFFICIAL_INCOME_PATTERNS + NO_INCOME_PATTERNS)
+    )
+
+
+def _has_monthly_payment_context(text: str, last_slot: str | None) -> bool:
+    return bool(
+        last_slot == "monthly_payments"
+        or _contains_any(text, ("плачу", "платеж", "платежи", "в месяц", "ежемесячно"))
+    )
+
+
+def _can_extract_monthly_payment(text: str, last_slot: str | None) -> bool:
+    monthly_context = _has_monthly_payment_context(text, last_slot)
+    if not monthly_context:
+        return False
+    if last_slot in {"income_status", "comfortable_payment"}:
+        return False
+    return True
+
+
+def _can_extract_official_income(text: str, last_slot: str | None) -> bool:
+    income_context = _has_income_context(text, last_slot)
+    if not income_context:
+        return False
+    if last_slot == "monthly_payments" and _has_monthly_payment_context(text, last_slot):
+        return False
+    return True
+
+
+def _looks_like_payment_correction(text: str) -> bool:
+    return bool(
+        _contains_any(text, ACTIVE_DIALOG_CORRECTION_PATTERNS)
+        and (
+            _contains_any(text, ("платеж", "платежи", "плачу", "в месяц"))
+            or _contains_any(text, ("по карте", "по картам", "по кредиту", "по кредитам"))
+        )
+    )
 
 
 def _has_mfo_signal(text: str) -> bool:
@@ -719,6 +875,9 @@ def _find_amount_near(text: str, keywords: tuple[str, ...]) -> int | None:
         if index == -1:
             continue
         window = text[index : index + 80]
+        composite_amount = _first_composite_amount(window)
+        if composite_amount is not None:
+            return composite_amount
         match = AMOUNT_PATTERN.search(window)
         if match:
             return _parse_amount(match.group(1), match.group(2))
@@ -726,11 +885,34 @@ def _find_amount_near(text: str, keywords: tuple[str, ...]) -> int | None:
 
 
 def _first_contextual_amount(text: str) -> int | None:
+    composite_amount = _first_composite_amount(text)
+    if composite_amount is not None:
+        return composite_amount
+    range_amount = _first_contextual_amount_range(text)
+    if range_amount is not None:
+        return range_amount
     for match in AMOUNT_PATTERN.finditer(text):
         if match.group(2) is None and _is_month_duration_after(text, match.end()):
             continue
         return _parse_amount(match.group(1), match.group(2))
     return None
+
+
+def _first_composite_amount(text: str) -> int | None:
+    match = COMPOSITE_MILLION_THOUSAND_PATTERN.search(text)
+    if match is None:
+        return None
+    million_part = _parse_amount(match.group(1), match.group(2))
+    thousand_part = _parse_amount(match.group(3), match.group(4))
+    return million_part + thousand_part
+
+
+def _first_contextual_amount_range(text: str) -> int | None:
+    match = AMOUNT_RANGE_PATTERN.search(text)
+    if match is None:
+        return None
+    # For a conversational range, keep the conservative upper bound as approx value.
+    return _parse_amount(match.group(2), match.group(3))
 
 
 def _is_month_duration_after(text: str, position: int) -> bool:
@@ -748,9 +930,9 @@ def _looks_like_standalone_total_debt(text: str) -> bool:
 
 def _parse_amount(number: str, unit: str | None) -> int:
     value = float(number.replace(",", "."))
-    if unit in {"млн", "миллион", "миллиона"}:
+    if unit in {"млн", "миллион", "миллиона", "миллионов"}:
         value *= 1_000_000
-    elif unit in {"тыс", "к"}:
+    elif unit in {"тыс", "тысяч", "к"}:
         value *= 1_000
     return int(value)
 

@@ -15,9 +15,12 @@ def test_guard_rejects_internal_words() -> None:
     move = ActorMove(move_type="ask_slot", selected_route="PTS", phase="COLLECTING", next_slot="car_year")
 
     validation = validate_text("Сейчас route PTS проходит через validator.", move)
+    pipeline_validation = validate_text("Сейчас пайплайн выбрал следующий слот.", move)
 
     assert not validation.accepted
     assert "internal_word" in validation.issue_codes
+    assert not pipeline_validation.accepted
+    assert "internal_word" in pipeline_validation.issue_codes
 
 
 def test_guard_rejects_more_than_one_question() -> None:

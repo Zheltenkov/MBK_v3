@@ -21,6 +21,10 @@ def execute_if_needed(move: ActorMove, state: DialogueV3State) -> list[ActionEve
 
     if not move.terminal_action:
         return []
+    action_key = f"{move.selected_route}:{move.terminal_action}"
+    if action_key in state.emitted_terminal_actions:
+        return []
+    state.emitted_terminal_actions.add(action_key)
     return [
         ActionEvent(
             action_id=move.terminal_action,

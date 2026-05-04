@@ -11,9 +11,15 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Literal
 
 from .actor_prompts import ACTOR_STYLE_PACK, FEW_SHOT_EXAMPLES, SYSTEM_PROMPT
+from .constants import AUTO_AUX, MORTGAGE_AUX, MORTGAGE_MAIN, PTS
+from .facts import ExtractedTurn
 from .moves import ActorMove, terminal_action_scope
 from .response_guard import GuardValidation
-from .safe_fallback import ActorWriterOutput, deterministic_question_for_slot
+from .safe_fallback import (
+    ActorWriterOutput,
+    deterministic_output_for_slot,
+    deterministic_question_for_slot,
+)
 from .state import DialogueV3State
 
 WriterMode = Literal["deterministic", "llm", "llm_guarded"]
@@ -28,9 +34,15 @@ class CompactStateSummary:
     turn_index: int
     last_user_text: str = ""
     known_facts: dict[str, Any] | None = None
+    newly_extracted_facts: dict[str, Any] | None = None
+    conversation_summary: str = ""
+    emitted_terminal_actions: list[str] | None = None
 
 
-def build_compact_state_summary(state: DialogueV3State) -> CompactStateSummary:
+def build_compact_state_summary(
+    state: DialogueV3State,
+    extracted_turn: ExtractedTurn | None = None,
+) -> CompactStateSummary:
     """Prepare compact, read-only context for the actor writer."""
 
     known_facts = {
@@ -48,6 +60,9 @@ def build_compact_state_summary(state: DialogueV3State) -> CompactStateSummary:
         turn_index=state.turn_index,
         last_user_text=last_user_text,
         known_facts=known_facts,
+        newly_extracted_facts=dict(extracted_turn.facts) if extracted_turn else None,
+        conversation_summary=_conversation_summary(known_facts),
+        emitted_terminal_actions=sorted(state.emitted_terminal_actions),
     )
 
 
@@ -111,10 +126,7 @@ class ActorWriter:
         state_summary: CompactStateSummary | None,
     ) -> ActorWriterOutput:
         if move.move_type == "ask_slot" and move.next_slot:
-            return ActorWriterOutput(
-                body="",
-                followup_question=deterministic_question_for_slot(move.next_slot),
-            )
+            return deterministic_output_for_slot(move.next_slot)
 
         if move.move_type == "answer_then_ask_slot" and move.next_slot:
             return ActorWriterOutput(
@@ -144,6 +156,9 @@ class ActorWriter:
                 body="Это повторное обращение после перехода к специалисту. Анкету заново проходить не нужно - восстановим контакт и отметим, что ответа не было."
             )
 
+        if move.move_type == "post_terminal_answer":
+            return ActorWriterOutput(body=_post_terminal_body(move))
+
         if move.move_type == "terminal_action":
             return ActorWriterOutput(body=_terminal_body(move))
 
@@ -163,6 +178,8 @@ class ActorWriter:
         payload = {
             "actor_move": asdict(move),
             "state_summary": asdict(state_summary) if state_summary else {},
+            "writer_context": _build_writer_context(move, state_summary),
+            "slot_wording_hints": SLOT_WORDING_HINTS,
             "style_pack": ACTOR_STYLE_PACK,
             "few_shots": FEW_SHOT_EXAMPLES,
         }
@@ -185,6 +202,90 @@ def _parse_actor_json(raw_response: str) -> ActorWriterOutput:
         body=str(payload.get("body") or ""),
         followup_question=str(payload.get("followup_question") or ""),
     )
+
+
+SLOT_WORDING_HINTS = {
+    "need_type": "Уточнить, что главное: закрыть долги/карты, снизить платеж, получить сумму на руки или другое.",
+    "total_debt": "Спросить общую сумму долгов, кредитов, карт и займов.",
+    "monthly_payments": "Спросить текущую сумму ежемесячных платежей.",
+    "income_status": "Спросить доход в месяц и официальный ли он.",
+    "comfortable_payment": "Спросить посильный ежемесячный платеж.",
+    "delinquency_context": "Спросить, есть ли просрочки и сколько они длятся.",
+    "property_type": "Спросить, что за объект: квартира, дом или другое.",
+    "property_region": "Спросить регион или город объекта.",
+    "property_encumbrance_basic": "Спросить ипотеку, залог, аресты или ограничения.",
+    "car_brand_model": "Спросить марку и модель машины.",
+    "car_year": "Спросить год выпуска машины.",
+    "car_owner": "Спросить, на кого оформлена машина.",
+    "car_pledge_or_restrictions": "Спросить залог, автокредит, аресты или ограничения по машине.",
+}
+
+
+def _build_writer_context(
+    move: ActorMove,
+    state_summary: CompactStateSummary | None,
+) -> dict[str, Any]:
+    """Build a read-only prompt payload; backend decisions remain authoritative."""
+
+    known_facts = dict(state_summary.known_facts or {}) if state_summary else {}
+    known_facts.update(move.known_facts or {})
+    emitted_terminal_actions = list(state_summary.emitted_terminal_actions or []) if state_summary else []
+    return {
+        "latest_user_message": state_summary.last_user_text if state_summary else "",
+        "conversation_summary": state_summary.conversation_summary if state_summary else "",
+        "known_facts": known_facts,
+        "newly_extracted_facts": dict(state_summary.newly_extracted_facts or {}) if state_summary else {},
+        "selected_route": move.selected_route,
+        "phase": move.phase,
+        "move_type": move.move_type,
+        "next_slot": move.next_slot,
+        "terminal_action": move.terminal_action,
+        "action_scope": move.action_scope,
+        "terminal_action_already_emitted": _terminal_action_already_emitted(
+            move,
+            emitted_terminal_actions,
+        ),
+        "direct_answer_topic": move.direct_answer_topic,
+        "client_concern": move.client_concern,
+        "question_goal": move.question_goal,
+        "must_say": list(move.must_say),
+        "must_not_say": list(move.must_not_say),
+    }
+
+
+def _terminal_action_already_emitted(
+    move: ActorMove,
+    emitted_terminal_actions: list[str],
+) -> bool:
+    if move.terminal_action:
+        return f"{move.selected_route}:{move.terminal_action}" in emitted_terminal_actions
+    return any(action_key.startswith(f"{move.selected_route}:") for action_key in emitted_terminal_actions)
+
+
+def _conversation_summary(known_facts: dict[str, Any]) -> str:
+    parts: list[str] = []
+    need_type = known_facts.get("need_type")
+    if need_type == "debt_solution":
+        parts.append("клиент хочет закрыть долги или карты")
+    elif need_type == "payment_reduction":
+        parts.append("клиент хочет снизить ежемесячный платеж")
+    elif need_type == "new_money":
+        parts.append("клиенту нужна сумма на руки")
+    if known_facts.get("total_debt") is not None:
+        parts.append(f"общий долг около {known_facts['total_debt']}")
+    if known_facts.get("monthly_payments") is not None:
+        parts.append(f"текущий платеж около {known_facts['monthly_payments']}")
+    if known_facts.get("official_income") is not None:
+        parts.append(f"официальный доход около {known_facts['official_income']}")
+    elif known_facts.get("income_status") not in (None, "unknown"):
+        parts.append(f"доход: {known_facts['income_status']}")
+    if known_facts.get("comfortable_payment") is not None:
+        parts.append(f"комфортный платеж около {known_facts['comfortable_payment']}")
+    if known_facts.get("has_arrears") is True:
+        parts.append("есть просрочка")
+    if known_facts.get("has_arrears") is False:
+        parts.append("просрочек нет")
+    return "; ".join(parts)
 
 
 def _offtopic_redirect(
@@ -217,9 +318,9 @@ def _objection_answer(client_concern: str | None) -> str:
 def _terminal_body(move: ActorMove) -> str:
     scope = move.action_scope or terminal_action_scope(move.terminal_action)
     if scope == "bfl_handoff":
-        return "Передам специалисту по долгам - он проверит законный вариант снижения нагрузки и сравнит решения без обещаний заранее."
+        return _bfl_terminal_body(move)
     if scope == "handoff_expert":
-        return "Базовые данные собраны. Передам ситуацию специалисту: он проверит подходящий формат и ограничения без обещаний заранее."
+        return _expert_handoff_body(move)
     if scope == "manual_review":
         return "Автоматически обещать решение здесь нельзя. Передам на ручной разбор, чтобы ситуацию проверили аккуратно."
     if scope == "self_serve_links":
@@ -229,6 +330,100 @@ def _terminal_body(move: ActorMove) -> str:
     if scope == "repeat_handoff":
         return "Это повторное обращение после перехода к специалисту. Анкету заново проходить не нужно - восстановим контакт и отметим, что ответа не было."
     return "Передам ситуацию специалисту для проверки без обещаний заранее."
+
+
+def _expert_handoff_body(move: ActorMove) -> str:
+    if move.selected_route in {PTS, AUTO_AUX}:
+        return (
+            "По машине основные параметры уже понятны. Передам ситуацию специалисту: "
+            "он проверит формат по авто и ограничения без обещаний заранее."
+        )
+    if move.selected_route in {MORTGAGE_MAIN, MORTGAGE_AUX}:
+        return (
+            "По недвижимости основные параметры уже понятны. Передам ситуацию специалисту: "
+            "он проверит объект, ограничения и возможный формат без обещаний заранее."
+        )
+    return "Передам ситуацию специалисту: он проверит подходящий формат и ограничения без обещаний заранее."
+
+
+def _bfl_terminal_body(move: ActorMove) -> str:
+    reasons = _bfl_reason_parts(move.known_facts)
+    if reasons:
+        reason_text = " ".join(reasons)
+    else:
+        reason_text = "Здесь уже важнее не добирать новый кредит, а разобрать долговую нагрузку."
+    return (
+        f"{reason_text} Передам специалисту по долгам: он проверит, можно ли идти "
+        "в сторону посильного графика выплат и какие риски есть. Без обещаний заранее."
+    )
+
+
+def _bfl_reason_parts(known_facts: dict[str, Any]) -> list[str]:
+    parts: list[str] = []
+    total_debt = _money(known_facts.get("total_debt"))
+    monthly_payments = _money(known_facts.get("monthly_payments"))
+    official_income = _money(known_facts.get("official_income"))
+    comfortable_payment = _money(known_facts.get("comfortable_payment"))
+    income_status = known_facts.get("income_status")
+    has_arrears = known_facts.get("has_arrears")
+    arrears = known_facts.get("delinquency_context")
+
+    if total_debt and monthly_payments:
+        parts.append(f"Долг около {total_debt}, текущий платеж примерно {monthly_payments}.")
+    elif total_debt:
+        parts.append(f"Долг около {total_debt}, поэтому новый кредит не стоит добирать вслепую.")
+    elif monthly_payments:
+        parts.append(f"Текущий платеж примерно {monthly_payments}, сначала нужно разобрать нагрузку.")
+    else:
+        parts.append("Здесь уже важнее не добирать новый кредит, а разобрать долговую нагрузку.")
+
+    if official_income:
+        parts.append(f"Доход около {official_income},")
+        if comfortable_payment:
+            parts[-1] += f" комфортный платеж ниже - около {comfortable_payment}."
+        else:
+            parts[-1] += " поэтому важно считать посильный график."
+    elif income_status == "stable":
+        if comfortable_payment:
+            parts.append(f"Доход есть, комфортный платеж ниже - около {comfortable_payment}.")
+        else:
+            parts.append("Доход есть, значит сначала смотрим посильный график.")
+    elif comfortable_payment:
+        parts.append(f"Комфортный платеж ниже текущего - около {comfortable_payment}.")
+
+    if has_arrears is True:
+        if arrears:
+            parts.append(f"Плюс появилась просрочка: {arrears}.")
+        else:
+            parts.append("Плюс появилась просрочка.")
+    elif has_arrears is False:
+        parts.append("Просрочек нет, но нагрузку все равно нужно снижать аккуратно.")
+
+    return parts
+
+
+def _post_terminal_body(move: ActorMove) -> str:
+    if move.action_scope == "bfl_handoff":
+        if move.direct_answer_topic == "bankruptcy_clarification":
+            return (
+                "Не обязательно банкротство. По вашим вводным первым делом смотрят "
+                "посильный график или реструктуризацию: доход есть, вы хотите платить, "
+                "задача - снизить нагрузку. Банкротство - отдельный вариант, его не "
+                "назначают с ходу; специалист сравнит риски и скажет, что реалистичнее. "
+                "Без обещаний заранее."
+            )
+        return (
+            "Дальше с вами работает специалист по долгам: он разберет нагрузку, "
+            "платежи, доход и просрочку, а потом проверит реалистичный способ снизить "
+            "платеж. Повторно проходить те же вопросы не нужно."
+        )
+    return "Дальше уже идет выбранный разбор. Повторно проходить те же вопросы не нужно."
+
+
+def _money(value: Any) -> str | None:
+    if not isinstance(value, int):
+        return None
+    return f"{value:,} ₽".replace(",", " ")
 
 
 def _client_name_prefix(

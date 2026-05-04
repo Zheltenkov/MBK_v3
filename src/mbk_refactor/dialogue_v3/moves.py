@@ -33,6 +33,7 @@ MoveType = Literal[
     "security_action",
     "repeat_action",
     "no_solution_manual_review",
+    "post_terminal_answer",
 ]
 
 
@@ -129,6 +130,17 @@ def plan_actor_move(
             question_goal=route_session.next_slot,
         )
 
+    post_terminal_topic = _post_terminal_topic(route_session, state)
+    if post_terminal_topic:
+        return ActorMove(
+            move_type="post_terminal_answer",
+            selected_route=route_session.selected_route,
+            phase=route_session.phase,
+            direct_answer_topic=post_terminal_topic,
+            known_facts=build_terminal_known_facts(route_session.selected_route, state),
+            action_scope=terminal_action_scope(route_session.terminal_action),
+        )
+
     if route_session.next_slot:
         return ActorMove(
             move_type="ask_slot",
@@ -175,6 +187,45 @@ def terminal_action_scope(terminal_action: str | None) -> str | None:
     return ACTION_SCOPE_BY_ACTION_ID.get(terminal_action)
 
 
+POST_TERMINAL_NEXT_STEP_PATTERNS = (
+    "что дальше",
+    "что делать",
+    "что значит отдельный разбор",
+    "кто со мной свяжется",
+    "куда нажать",
+)
+POST_TERMINAL_BANKRUPTCY_PATTERNS = (
+    "это банкротство",
+    "можно без банкротства",
+    "без банкротства",
+    "банкротство или",
+)
+
+
+def _post_terminal_topic(route_session: RouteSession, state: DialogueV3State | None) -> str | None:
+    """Return a clarification topic after the already emitted terminal action."""
+
+    if state is None or not route_session.terminal_action:
+        return None
+    action_key = f"{route_session.selected_route}:{route_session.terminal_action}"
+    if action_key not in state.emitted_terminal_actions:
+        return None
+
+    last_user_text = _last_user_text(state).lower().replace("ё", "е")
+    if any(pattern in last_user_text for pattern in POST_TERMINAL_BANKRUPTCY_PATTERNS):
+        return "bankruptcy_clarification"
+    if any(pattern in last_user_text for pattern in POST_TERMINAL_NEXT_STEP_PATTERNS):
+        return "post_terminal_next_step"
+    return "post_terminal_next_step"
+
+
+def _last_user_text(state: DialogueV3State) -> str:
+    for message in reversed(state.messages):
+        if message.role == "user":
+            return message.content
+    return ""
+
+
 def build_terminal_known_facts(
     route: str,
     state: DialogueV3State | None,
@@ -216,6 +267,7 @@ def build_terminal_known_facts(
                 "total_debt": "total_debt",
                 "monthly_payments": "monthly_payments",
                 "income_status": "income_status",
+                "official_income": "official_income",
                 "comfortable_payment": "comfortable_payment",
                 "has_arrears": "has_arrears",
                 "arrears_months": "delinquency_context",
