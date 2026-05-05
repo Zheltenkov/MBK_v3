@@ -89,6 +89,23 @@ def test_guard_accepts_handoff_language_with_terminal_action_and_event() -> None
     assert validation.accepted
 
 
+def test_guard_rejects_handoff_expert_terminal_without_specialist_next_step() -> None:
+    move = ActorMove(
+        move_type="terminal_action",
+        selected_route="MORTGAGE_MAIN",
+        phase="READY_FOR_TERMINAL",
+        terminal_action="HANDOFF_EXPERT",
+    )
+    output = ActorWriterOutput(
+        body="Ситуация по квартире уже понятна. Для такого случая дальше нужен профильный разбор без обещаний заранее."
+    )
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert not validation.accepted
+    assert "handoff_next_step_missing" in validation.issue_codes
+
+
 def test_guard_rejects_terminal_action_without_matching_event() -> None:
     move = ActorMove(
         move_type="terminal_action",

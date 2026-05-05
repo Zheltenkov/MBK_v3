@@ -17,7 +17,9 @@ def started_multi_direction_state():
         session_id="multi-direction",
     )
     assert state.messages[-1].role == "assistant"
-    assert "что для вас сейчас в первую очередь" in state.messages[-1].content.lower()
+    lowered = state.messages[-1].content.lower()
+    assert "деньги нужны на что в первую очередь" in lowered
+    assert "закрыть/объединить долги" in lowered
     assert state.turn_index == 0
     return state
 

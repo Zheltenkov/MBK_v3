@@ -17,7 +17,7 @@ def state_from_messages(messages: list[str]) -> DialogueV3State:
 def test_pts_retention_is_not_refusal() -> None:
     state = state_from_messages(
         [
-            "Нужны деньги, авто есть",
+            "У меня есть машина",
             "Машину отдавать не буду, она для работы",
         ]
     )
@@ -50,6 +50,26 @@ def test_fact_merge_marks_conflict_without_silent_overwrite() -> None:
     fact = state.facts["desired_amount"]
     assert fact.value == 500_000
     assert fact.quality == "conflicting"
+
+
+def test_case_frame_derives_payment_load_from_canonical_amounts() -> None:
+    state = DialogueV3State(session_id="payment-load")
+    state.merge_facts({"monthly_payments": 78_000})
+    state.merge_facts({"official_income": 125_000})
+
+    frame = build_case_frame(state)
+
+    assert frame.high_payment_load is True
+
+
+def test_case_frame_leaves_clean_payment_load_false() -> None:
+    state = DialogueV3State(session_id="clean-payment-load")
+    state.merge_facts({"monthly_payments": 20_000})
+    state.merge_facts({"official_income": 125_000})
+
+    frame = build_case_frame(state)
+
+    assert frame.high_payment_load is False
 
 
 def test_comfort_payment_text_does_not_extract_mfo() -> None:

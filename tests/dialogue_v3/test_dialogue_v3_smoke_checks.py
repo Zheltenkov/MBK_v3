@@ -90,3 +90,37 @@ def test_smoke_form_alias_adapter_uses_public_form_parser() -> None:
     assert normalized["has_current_loans"] is True
     assert normalized["property_region"] == "Москва"
     assert normalized["official_income"] == 125_000
+
+
+def test_smoke_custom_no_terminal_violation_is_hard_zero() -> None:
+    smoke = load_smoke_module()
+    result = {
+        "route_ok": True,
+        "terminal_ok": True,
+        "violations": ["unexpected_terminal"],
+        "scenario_id": "custom",
+        "expected_route": "DISCOVERY",
+        "final_route": "DISCOVERY",
+    }
+
+    summary = smoke._build_summary([result])
+
+    assert summary["violation_counts"]["unexpected_terminal"] == 1
+    assert summary["stop_criteria_ok"] is False
+
+
+def test_smoke_custom_forbidden_route_violation_is_hard_zero() -> None:
+    smoke = load_smoke_module()
+    result = {
+        "route_ok": True,
+        "terminal_ok": True,
+        "violations": ["forbidden_route"],
+        "scenario_id": "custom",
+        "expected_route": "DISCOVERY",
+        "final_route": "BFL_RD",
+    }
+
+    summary = smoke._build_summary([result])
+
+    assert summary["violation_counts"]["forbidden_route"] == 1
+    assert summary["stop_criteria_ok"] is False

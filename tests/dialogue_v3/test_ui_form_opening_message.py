@@ -50,8 +50,10 @@ def test_opening_message_is_actor_like_and_top_level() -> None:
     assert "есть текущие кредиты" in lowered
     assert "указали авто" in lowered
     assert "актив - недвижимость" in lowered
-    assert "закрыть долги или карты" in lowered
-    assert "снизить ежемесячный платеж" in lowered
+    assert "\n\n" in opening
+    assert "чтобы подобрать нормальный вариант" in lowered
+    assert "закрыть/объединить долги" in lowered
+    assert "снизить ежемесячный платёж" in lowered
     assert "получить сумму на руки" in lowered
     assert "это квартира, дом или другой объект" not in lowered
     assert "какого года" not in lowered

@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from .constants import PTS
+from .constants import MORTGAGE_AUX, MORTGAGE_MAIN, PTS
 
 if TYPE_CHECKING:
     from .state import DialogueV3State
@@ -36,6 +36,29 @@ class ExtractedTurn:
     service_signal: str | None = None
     route_rejection: str | None = None
     raw_user_text: str = ""
+
+
+@dataclass(frozen=True)
+class VehicleIntentEvidence:
+    """Turn-local semantic evidence for auto/PTS extraction."""
+
+    has_vehicle_context: bool = False
+    auto_collateral_consideration: bool = False
+    explicit_pts_channel: bool = False
+    retention_required: bool = False
+    transfer_refusal: bool = False
+    hard_collateral_refusal: bool = False
+    evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class NeedIntentResult:
+    """Turn-local semantic need signal without selecting a product route."""
+
+    need_type: str | None = None
+    early_need_signal: str | None = None
+    purpose_goal: str | None = None
+    evidence: tuple[str, ...] = ()
 
 
 SERVICE_FRAUD_PATTERNS = (
@@ -165,7 +188,7 @@ PAYMENT_REDUCTION_PATTERNS = (
     "не вывожу кредиты",
     "не вывожу долги",
 )
-REPAIR_PURPOSE_PATTERNS = ("ремонт",)
+REPAIR_PURPOSE_PATTERNS = ("ремонт", "лечение", "покупку техники", "покупка техники")
 
 EXPLICIT_PTS_PATTERNS = (
     "под птс",
@@ -284,6 +307,18 @@ BANKRUPTCY_CLARIFICATION_PATTERNS = (
     "банкротство или реструктуризация",
     "банкротство или можно",
 )
+POST_TERMINAL_NEXT_STEP_PATTERNS = (
+    "что дальше",
+    "что делать",
+    "что значит отдельный разбор",
+    "куда нажать",
+)
+POST_TERMINAL_CONTACT_PATTERNS = (
+    "кто со мной свяжется",
+    "кто свяжется",
+    "как со мной свяжутся",
+    "когда со мной свяжутся",
+)
 MFO_RATING_CONCERN_PATTERNS = (
     "мфо портит рейтинг",
     "мфо портят рейтинг",
@@ -308,6 +343,26 @@ NO_STABLE_INCOME_PATTERNS = ("дохода стабильного нет", "не
 NO_INCOME_PATTERNS = ("дохода нет", "без дохода")
 NO_OFFICIAL_INCOME_PATTERNS = ("официального дохода нет", "неофициальный доход")
 STABLE_INCOME_PATTERNS = ("официально", "работаю", "стабильный")
+COMFORTABLE_PAYMENT_CONTEXT_PATTERNS = (
+    "комфортно",
+    "комфортнее",
+    "комфортный платеж",
+    "комфортный платёж",
+    "нормально было бы",
+    "удобнее было бы",
+    "удобнее платить",
+    "могу платить",
+    "мог бы платить",
+    "готов платить",
+    "смогу платить",
+    "хотелось бы платить",
+    "посильно",
+    "посильный платеж",
+    "посильный платёж",
+    "тянуть смогу",
+    "тянуть могу",
+    "для меня нормально",
+)
 
 NEED_SIGNAL_PRIORITY = {
     "unknown": 0,
@@ -396,8 +451,12 @@ def extract_turn(
     """Extract obvious facts and non-routing signals by deterministic rules only."""
 
     text = normalize_text(user_message)
-    facts: dict[str, Any] = {"last_user_text": user_message}
+    facts: dict[str, Any] = {}
     concerns: list[str] = []
+
+    post_terminal_topic = detect_post_terminal_topic(text)
+    if post_terminal_topic:
+        facts["post_terminal_topic"] = post_terminal_topic
 
     service_signal, off_topic = extract_service_signals(text, facts, concerns, state)
     extract_need_signals(text, facts)
@@ -457,21 +516,172 @@ def extract_service_signals(
     return service_signal, off_topic
 
 
+def detect_post_terminal_topic(text: str) -> str | None:
+    """Return a compact post-terminal clarification topic, if the turn contains one."""
+
+    text = normalize_text(text)
+    if _is_bankruptcy_clarification(text):
+        return "bankruptcy_clarification"
+    if _is_contact_question(text):
+        return "contact_question"
+    if _is_next_step_question(text):
+        return "next_step"
+    return None
+
+
+def _is_next_step_question(text: str) -> bool:
+    """Detect clarification about the next operational step."""
+
+    if _contains_any(text, POST_TERMINAL_NEXT_STEP_PATTERNS):
+        return True
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            r"\bдальше\b.{0,20}\b(?:что|как|будет|делать)\b",
+            r"\b(?:куда|где)\b.{0,20}\bпереход\w*\b",
+            r"\bнужно\b.{0,20}\bкуда[-\s]?то\b.{0,20}\bпереход\w*\b",
+            r"\bспециалист\b.{0,30}\b(?:сам\s+)?посмотр\w*\b",
+            r"\bкто\b.{0,20}\bдальше\b.{0,20}\bпосмотр\w*\b",
+            r"\bкак\b.{0,20}\bдальше\b.{0,20}\bбуд\w*\b",
+        )
+    )
+
+
+def _is_bankruptcy_clarification(text: str) -> bool:
+    """Detect debt-procedure clarification without deciding the route."""
+
+    if _contains_any(text, BANKRUPTCY_CLARIFICATION_PATTERNS):
+        return True
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            r"\bбанкротств\w*\b.{0,30}\bили\b",
+            r"\bэто\b.{0,20}\bреструктуризац\w*\b",
+            r"\bбез\s+суда\b.{0,20}\bможн\w*\b",
+            r"\bсписан\w*\b.{0,20}\bили\b.{0,20}\bплат\w*\b",
+        )
+    )
+
+
+def _is_contact_question(text: str) -> bool:
+    """Detect clarification about who contacts the client and when."""
+
+    if _contains_any(text, POST_TERMINAL_CONTACT_PATTERNS):
+        return True
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            r"\bкогда\b.{0,25}\bсвяж\w*\b",
+            r"\bмне\b.{0,20}\bпозвон\w*\b",
+            r"\bспециалист\b.{0,25}\bнапиш\w*\b",
+            r"\bждать\b.{0,20}\b(?:звонк\w*|сообщен\w*)\b",
+        )
+    )
+
+
 def extract_need_signals(text: str, facts: dict[str, Any]) -> None:
     """Extract broad need signals; priorities prevent weaker purpose words from overriding debt."""
 
-    if _contains_any(text, DEBT_SOLUTION_PATTERNS) or _matches_any_regex(text, DEBT_SOLUTION_REGEXES):
-        _set_need_signal(facts, "debt_solution")
+    result = detect_need_intent(text)
+    if result.purpose_goal:
+        facts["purpose_goal"] = result.purpose_goal
+    if result.need_type:
+        _set_need_signal(facts, result.need_type)
+    elif result.early_need_signal:
+        _set_early_need_signal(facts, result.early_need_signal)
+
+
+def detect_need_intent(
+    text: str,
+    state: DialogueV3State | None = None,
+) -> NeedIntentResult:
+    """Classify broad client need without selecting a route."""
+
+    text = normalize_text(text)
+    del state  # Reserved for future context-aware need extraction.
+
+    evidence: list[str] = []
+    purpose_goal = _detect_purpose_goal(text)
+    debt_solution = _is_debt_solution_need(text)
+    payment_reduction = _is_payment_reduction_need(text)
+    strong_new_money = _is_strong_new_money_need(text)
+    generic_new_money = _is_generic_new_money_need(text)
+
+    if purpose_goal:
+        evidence.append(f"purpose:{purpose_goal}")
+    if debt_solution:
+        evidence.append("debt_solution")
+        return NeedIntentResult(
+            need_type="debt_solution",
+            early_need_signal="debt_solution",
+            purpose_goal=purpose_goal,
+            evidence=tuple(evidence),
+        )
+    if payment_reduction:
+        evidence.append("payment_reduction")
+        return NeedIntentResult(
+            need_type="payment_reduction",
+            early_need_signal="payment_reduction",
+            purpose_goal=purpose_goal,
+            evidence=tuple(evidence),
+        )
+    if purpose_goal:
+        return NeedIntentResult(
+            early_need_signal="repair_or_purpose",
+            purpose_goal=purpose_goal,
+            evidence=tuple(evidence),
+        )
+    if strong_new_money:
+        evidence.append("new_money")
+        return NeedIntentResult(
+            need_type="new_money",
+            early_need_signal="new_money",
+            evidence=tuple(evidence),
+        )
+    if generic_new_money:
+        evidence.append("generic_new_money")
+        return NeedIntentResult(
+            early_need_signal="new_money",
+            evidence=tuple(evidence),
+        )
+    return NeedIntentResult()
+
+
+def _is_debt_solution_need(text: str) -> bool:
+    return _contains_any(text, DEBT_SOLUTION_PATTERNS) or _matches_any_regex(text, DEBT_SOLUTION_REGEXES)
+
+
+def _is_payment_reduction_need(text: str) -> bool:
     if _contains_any(text, PAYMENT_REDUCTION_PATTERNS) or _matches_any_regex(text, PAYMENT_REDUCTION_REGEXES):
-        _set_need_signal(facts, "payment_reduction")
-    if _contains_any(text, REPAIR_PURPOSE_PATTERNS):
-        facts["purpose_goal"] = "car_repair" if _contains_any(text, ("ремонт машины", "ремонт авто")) else "repair"
-        _set_need_signal(facts, "repair_or_purpose")
-    if _contains_any(text, MONEY_REQUEST_PATTERNS):
-        if _contains_any(text, STRONG_NEW_MONEY_PATTERNS):
-            _set_need_signal(facts, "new_money")
-        else:
-            _set_early_need_signal(facts, "new_money")
+        return True
+    return bool(
+        re.search(r"\bнагрузк\w*\b.{0,30}\b(?:больш\w*|высок\w*|тяжел\w*)\b", text)
+        or re.search(r"\b(?:больш\w*|высок\w*|тяжел\w*)\b.{0,30}\bнагрузк\w*\b", text)
+    )
+
+
+def _is_strong_new_money_need(text: str) -> bool:
+    return _contains_any(text, STRONG_NEW_MONEY_PATTERNS + ("хочу кредит", "нужна сумма"))
+
+
+def _is_generic_new_money_need(text: str) -> bool:
+    return _contains_any(text, MONEY_REQUEST_PATTERNS)
+
+
+def _detect_purpose_goal(text: str) -> str | None:
+    if not _contains_any(text, REPAIR_PURPOSE_PATTERNS):
+        return None
+    if _contains_any(text, ("ремонт машины", "ремонт авто")):
+        return "car_repair"
+    if _contains_any(text, ("ремонт квартиры", "ремонт дома", "ремонт жилья")):
+        return "home_repair"
+    if "ремонт" in text:
+        return "repair"
+    if "лечение" in text:
+        return "medical"
+    if _contains_any(text, ("покупку техники", "покупка техники")):
+        return "purchase"
+    return None
 
 
 def extract_collateral_signals(
@@ -482,19 +692,15 @@ def extract_collateral_signals(
 ) -> None:
     """Extract collateral facts and concerns without choosing a route."""
 
-    if _contains_any(text, EXPLICIT_PTS_PATTERNS):
-        facts["explicit_pts_intent"] = True
-        facts["has_car"] = True
-        _set_need_signal(facts, "explicit_pts")
-
     if _contains_any(text, EXPLICIT_MORTGAGE_PATTERNS):
         facts["explicit_mortgage_intent"] = True
         _set_need_signal(facts, "explicit_mortgage")
 
-    _extract_property_facts(text, facts, concerns)
-    _extract_vehicle_facts(text, facts, concerns, state)
+    _extract_property_facts(text, facts, concerns, state)
+    vehicle_evidence = detect_vehicle_intent(text, state)
+    _extract_vehicle_facts(text, facts, concerns, state, vehicle_evidence)
 
-    if _contains_any(text, VEHICLE_COLLATERAL_REFUSAL_PATTERNS):
+    if vehicle_evidence.hard_collateral_refusal:
         facts["route_rejection"] = PTS
         facts["vehicle_refuses_collateral"] = True
     if _contains_any(text, MORTGAGE_REJECTION_PATTERNS):
@@ -514,7 +720,7 @@ def extract_debt_signals(text: str, facts: dict[str, Any], concerns: list[str]) 
         facts["loan_types_known"] = True
         _set_need_signal(facts, "debt_solution")
 
-    if _contains_any(text, NO_ARREARS_PATTERNS):
+    if _has_no_arrears_signal(text):
         facts["has_arrears"] = False
     elif _contains_any(text, ARREARS_PATTERNS):
         facts["has_arrears"] = True
@@ -557,6 +763,15 @@ def extract_debt_signals(text: str, facts: dict[str, Any], concerns: list[str]) 
         facts["need_type"] = "new_money"
 
 
+def _has_no_arrears_signal(text: str) -> bool:
+    if _contains_any(text, NO_ARREARS_PATTERNS + ("плачу по графику", "без задержек")):
+        return True
+    return bool(
+        re.search(r"\bпросроч(?:ек|ки)?\b.{0,25}\bнет\b", text)
+        or re.search(r"\bнет\s+просроч(?:ек|ки)?\b", text)
+    )
+
+
 def extract_amounts_with_context(
     text: str,
     facts: dict[str, Any],
@@ -574,23 +789,28 @@ def extract_amounts_with_context(
     if total_debt is not None:
         facts["total_debt"] = total_debt
 
+    comfortable_context = _has_comfortable_payment_context(text)
     if _can_extract_monthly_payment(text, last_slot):
-        monthly_payments = _find_amount_near(text, ("плачу", "платеж", "платежи"))
-        if monthly_payments is None and last_slot == "monthly_payments":
-            monthly_payments = _first_contextual_amount(text)
-        elif monthly_payments is None and _contains_any(text, ("в месяц", "ежемесячно")):
-            monthly_payments = _first_contextual_amount(text)
+        monthly_payments = (
+            _find_current_payment_amount(text)
+            if comfortable_context
+            else _find_amount_near(text, ("плачу", "уходит", "платеж", "платежи"))
+        )
+        if monthly_payments is None:
+            if comfortable_context:
+                monthly_payments = None
+            elif last_slot == "monthly_payments":
+                monthly_payments = _first_contextual_amount(text)
+            elif _contains_any(text, ("в месяц", "ежемесячно")):
+                monthly_payments = _first_contextual_amount(text)
         if monthly_payments is not None:
             facts["monthly_payments"] = monthly_payments
 
-    comfortable_payment = _find_amount_near(text, ("комфортно", "могу платить"))
+    comfortable_payment = _find_comfortable_payment_amount(text)
     if comfortable_payment is None and last_slot == "comfortable_payment" and not _looks_like_payment_correction(text):
-        comfortable_payment = _first_contextual_amount(text)
-    elif comfortable_payment is None and _contains_any(
-        text,
-        ("нормально", "нормальный платеж", "нормально было бы"),
-    ):
-        comfortable_payment = _first_contextual_amount(text)
+        comfortable_payment = _normalize_payment_amount(_first_contextual_amount(text))
+    elif comfortable_payment is None and _is_comfortable_payment_context(text):
+        comfortable_payment = _normalize_payment_amount(_first_contextual_amount(text))
     if comfortable_payment is not None:
         facts["comfortable_payment"] = comfortable_payment
 
@@ -601,7 +821,12 @@ def extract_amounts_with_context(
         facts["desired_amount"] = desired_amount
 
 
-def _extract_property_facts(text: str, facts: dict[str, Any], concerns: list[str]) -> None:
+def _extract_property_facts(
+    text: str,
+    facts: dict[str, Any],
+    concerns: list[str],
+    state: DialogueV3State | None,
+) -> None:
     property_word_present = _contains_any(text, PROPERTY_WORD_PATTERNS)
     property_available = _contains_any(text, PROPERTY_POSITIVE_PATTERNS)
     property_negative = _contains_any(text, PROPERTY_NEGATIVE_PATTERNS)
@@ -622,14 +847,24 @@ def _extract_property_facts(text: str, facts: dict[str, Any], concerns: list[str
         facts["has_property"] = False
 
     has_property_context = facts.get("has_property") is True or owner_known
+    mortgage_slot_context = _has_mortgage_property_slot_context(state)
     if has_property_context and _property_type_is_descriptive(text, "квартира"):
         facts["property_type"] = "apartment"
     elif has_property_context and _property_type_is_descriptive(text, "дом"):
         facts["property_type"] = "house"
+    elif mortgage_slot_context and _property_type_is_descriptive(text, "квартира"):
+        facts["property_type"] = "apartment"
+    elif mortgage_slot_context and _property_type_is_descriptive(text, "дом"):
+        facts["property_type"] = "house"
+    elif mortgage_slot_context and _property_type_is_descriptive(text, "комната"):
+        facts["property_type"] = "room"
 
-    if _contains_any(text, ("москва", "московская область", "московской области")):
+    if _contains_any(text, ("москва", "москве", "московская область", "московской области")):
         facts["property_region"] = "Москва"
-    elif _contains_any(text, ("санкт-петербург", "спб", "питер", "ленинградская область")):
+    elif _contains_any(
+        text,
+        ("санкт-петербург", "санкт-петербурге", "спб", "питер", "питере", "ленинградская область"),
+    ):
         facts["property_region"] = "Санкт-Петербург"
 
     if owner_known:
@@ -650,16 +885,155 @@ def _extract_property_facts(text: str, facts: dict[str, Any], concerns: list[str
         concerns.append("property_risk")
 
 
+def detect_vehicle_intent(
+    text: str,
+    state: DialogueV3State | None = None,
+) -> VehicleIntentEvidence:
+    """Infer vehicle/PTS meaning for this turn without selecting a route."""
+
+    text = normalize_text(text)
+    evidence: list[str] = []
+    hard_collateral_refusal = _mentions_hard_vehicle_refusal(text)
+    if hard_collateral_refusal:
+        evidence.append("hard_collateral_refusal")
+
+    explicit_pts_channel = _mentions_pts_channel(text)
+    if explicit_pts_channel:
+        evidence.append("explicit_pts_channel")
+
+    auto_collateral_consideration = _mentions_soft_auto_consideration(text)
+    if auto_collateral_consideration:
+        evidence.append("auto_collateral_consideration")
+
+    has_vehicle_context = bool(
+        _mentions_vehicle(text, state)
+        or explicit_pts_channel
+        or auto_collateral_consideration
+    )
+    if has_vehicle_context:
+        evidence.append("vehicle_context")
+
+    retention_raw = _mentions_retention_constraint(text)
+    transfer_refusal_raw = _mentions_transfer_refusal(text)
+    retention_required = retention_raw and has_vehicle_context
+    transfer_refusal = transfer_refusal_raw and has_vehicle_context
+    if (retention_required or transfer_refusal) and not hard_collateral_refusal:
+        auto_collateral_consideration = True
+        if "auto_collateral_consideration" not in evidence:
+            evidence.append("auto_collateral_consideration")
+    if retention_required:
+        evidence.append("retention_required")
+    if transfer_refusal:
+        evidence.append("transfer_refusal")
+
+    return VehicleIntentEvidence(
+        has_vehicle_context=has_vehicle_context,
+        auto_collateral_consideration=auto_collateral_consideration,
+        explicit_pts_channel=explicit_pts_channel,
+        retention_required=retention_required,
+        transfer_refusal=transfer_refusal,
+        hard_collateral_refusal=hard_collateral_refusal,
+        evidence=tuple(evidence),
+    )
+
+
+def _mentions_vehicle(text: str, state: DialogueV3State | None) -> bool:
+    """Detect vehicle context from text, known form facts, or current car slot."""
+
+    return bool(_has_vehicle_context(text, {}, state) or RAW_CAR_PATTERN.search(text))
+
+
+def _mentions_soft_auto_consideration(text: str) -> bool:
+    """Detect that the client allows using the car/PTS path as an option."""
+
+    if _contains_any(text, EXPLICIT_PTS_PATTERNS):
+        return True
+    vehicle_or_pts = r"(?:машин\w*|авто\w*|птс)"
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            rf"\b(?:машин\w*|авто\w*)\b.{{0,30}}\b(?:можно|готов\w*)\b.{{0,20}}\bрассмотр\w*",
+            rf"\bрассмотр\w*\b.{{0,30}}\b{vehicle_or_pts}\b",
+            rf"\bвариант\b.{{0,30}}\b(?:с\s+)?{vehicle_or_pts}\b",
+            r"\bможно\b.{0,20}\bпо\s+(?:машин\w*|авто)\b",
+            r"\bесли\b.{0,20}\bчерез\s+(?:машин\w*|авто)\b",
+            r"\bпод\s+(?:птс|авто|машин\w*)\b",
+        )
+    )
+
+
+def _mentions_pts_channel(text: str) -> bool:
+    """Detect an explicit PTS/auto-collateral channel, not a bare PTS mention."""
+
+    return bool(
+        re.search(r"\b(?:под|по|через)\s+(?:птс|авто|машин\w*)\b", text)
+        or re.search(r"\bвариант\b.{0,30}\b(?:с\s+)?(?:птс|авто|машин\w*)\b", text)
+    )
+
+
+def _mentions_retention_constraint(text: str) -> bool:
+    """Detect that the client needs to keep using the vehicle."""
+
+    if _contains_any(text, VEHICLE_RETENTION_PATTERNS):
+        return True
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            r"\b(?:машин\w*|авто|она|ее|её)\b.{0,35}\bнужн\w*\b.{0,25}\b(?:каждый день|для работы)\b",
+            r"\b(?:каждый день|для работы)\b.{0,35}\bнужн\w*\b",
+            r"\b(?:машин\w*|авто|она|ее|её)\b.{0,35}\b(?:для работы|каждый день)\b",
+            r"\b(?:пользоваться|ездить)\b.{0,30}\b(?:машин\w*|авто)\b.{0,20}\bнужн\w*\b",
+            r"\b(?:машин\w*|авто)\b.{0,35}\bоставал\w*\b.{0,20}\bу меня\b",
+            r"\b(?:машин\w*|авто)\b.{0,35}\bдолжн\w*\b.{0,20}\bостаться\b.{0,20}\bу меня\b",
+            r"\bоставал\w*\b.{0,20}\bу меня\b",
+        )
+    )
+
+
+def _mentions_transfer_refusal(text: str) -> bool:
+    """Detect refusal to physically hand over the car, not refusal of PTS itself."""
+
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            r"\b(?:отдавать|передавать)\b.{0,40}\bне\s+(?:готов\w*|буду|хочу)\b",
+            r"\bне\s+(?:готов\w*|буду|хочу)\b.{0,40}\b(?:отдавать|передавать)\b",
+            r"\b(?:машин\w*|авто)\b.{0,35}\bоставал\w*\b.{0,20}\bу меня\b",
+            r"\b(?:машин\w*|авто)\b.{0,35}\bдолжн\w*\b.{0,20}\bостаться\b.{0,20}\bу меня\b",
+            r"\bоставал\w*\b.{0,20}\bу меня\b",
+        )
+    )
+
+
+def _mentions_hard_vehicle_refusal(text: str) -> bool:
+    """Detect hard refusal of the auto-collateral route, not retention concern."""
+
+    if _contains_any(text, VEHICLE_COLLATERAL_REFUSAL_PATTERNS):
+        return True
+    return any(
+        re.search(pattern, text)
+        for pattern in (
+            r"(?<![a-zа-я0-9_])птс(?![a-zа-я0-9_]).{0,30}\bне\s+рассматрива\w*\b",
+            r"\bне\s+(?:хочу|готов\w*)\b.{0,30}\bзалог\b.{0,20}\b(?:машин\w*|авто)\b",
+            r"\bзалог\b.{0,20}\b(?:на\s+)?(?:машин\w*|авто)\b.{0,30}\bне\s+(?:хочу|готов\w*)\b",
+            r"\bникаких\b.{0,20}\bавтозалог\w*\b",
+            r"\b(?:машин\w*|авто)\b.{0,30}\b(?:вообще\s+)?не\s+трога\w*\b",
+        )
+    )
+
+
 def _extract_vehicle_facts(
     text: str,
     facts: dict[str, Any],
     concerns: list[str],
     state: DialogueV3State | None,
+    vehicle_evidence: VehicleIntentEvidence,
 ) -> None:
-    vehicle_context = _has_vehicle_context(text, facts, state)
+    vehicle_context = vehicle_evidence.has_vehicle_context
     if vehicle_context:
         facts["has_car"] = True
-    if _contains_any(text, VEHICLE_AVAILABILITY_PATTERNS):
+
+    if vehicle_evidence.explicit_pts_channel or vehicle_evidence.auto_collateral_consideration:
         facts["explicit_pts_intent"] = True
         _set_need_signal(facts, "explicit_pts")
 
@@ -678,12 +1052,10 @@ def _extract_vehicle_facts(
         facts["car_owner_known"] = True
         facts["car_owner"] = "client"
 
-    if _contains_any(text, VEHICLE_RETENTION_PATTERNS) and vehicle_context:
-        facts["explicit_pts_intent"] = True
+    if vehicle_evidence.retention_required or vehicle_evidence.transfer_refusal:
         facts["vehicle_requires_retention"] = True
         facts["vehicle_refuses_transfer"] = True
         facts["vehicle_refuses_collateral"] = False
-        _set_need_signal(facts, "explicit_pts")
         concerns.append("vehicle_retention")
 
     if _contains_any(
@@ -796,9 +1168,126 @@ def _has_monthly_payment_context(text: str, last_slot: str | None) -> bool:
     )
 
 
+def _is_comfortable_payment_context(text: str) -> bool:
+    if _contains_any(text, COMFORTABLE_PAYMENT_CONTEXT_PATTERNS):
+        return True
+    comfort_words = r"(?:комфорт\w*|удобн\w*|нормальн\w*|посильн\w*)"
+    return bool(
+        re.search(rf"\b{comfort_words}\b.{{0,45}}\b(?:было\s+бы|будет|плат\w*|платеж\w*|в\s+месяц)\b", text)
+        or re.search(rf"\b(?:было\s+бы|будет|плат\w*|платеж\w*|в\s+месяц)\b.{{0,45}}\b{comfort_words}\b", text)
+        or re.search(r"\b(?:могу|смогу|готов\w*)\b.{0,20}\bплат\w*\b", text)
+        or re.search(r"\bмог\s+бы\b.{0,20}\bплат\w*\b", text)
+        or re.search(r"\bхотелось\s+бы\b.{0,20}\bплат\w*\b", text)
+        or re.search(r"\bтянуть\b.{0,20}\b(?:могу|смогу)\b", text)
+    )
+
+
+def _has_comfortable_payment_context(text: str) -> bool:
+    return _is_comfortable_payment_context(text)
+
+
+def _has_explicit_current_payment_context(text: str) -> bool:
+    return _find_current_payment_amount(text) is not None
+
+
+def _find_current_payment_amount(text: str) -> int | None:
+    for keyword in ("сейчас плачу", "плачу", "сейчас уходит", "уходит"):
+        index = text.find(keyword)
+        if index == -1:
+            continue
+        window = text[index : index + 80]
+        comfort_index = _first_comfortable_payment_context_index(window)
+        if comfort_index is not None and comfort_index > 0:
+            window = window[:comfort_index]
+        amount = _first_contextual_amount(window)
+        if amount is not None:
+            return _normalize_payment_amount(amount)
+    return None
+
+
+def _find_comfortable_payment_amount(text: str) -> int | None:
+    context_index = _first_comfortable_payment_context_index(text)
+    if context_index is None:
+        return None
+    amount_after_context = _find_amount_after_comfort_context(text, context_index)
+    if amount_after_context is not None:
+        return _normalize_payment_amount(amount_after_context)
+    amount_before_context = _find_amount_immediately_before_comfort_context(text, context_index)
+    return _normalize_payment_amount(amount_before_context)
+
+
+def _find_amount_after_comfort_context(text: str, context_index: int) -> int | None:
+    window = text[context_index : context_index + 100]
+    amount_start = _first_amount_start(window)
+    if amount_start is None:
+        return None
+    if _contains_any(window[:amount_start], ("сейчас", "плачу", "уходит")):
+        return None
+    return _first_contextual_amount(window)
+
+
+def _find_amount_immediately_before_comfort_context(text: str, context_index: int) -> int | None:
+    prefix = text[max(0, context_index - 70) : context_index]
+    for match in reversed(list(AMOUNT_RANGE_PATTERN.finditer(prefix))):
+        if _amount_gap_is_comfort_link(prefix[match.end() :]):
+            return _first_contextual_amount_range(match.group(0))
+    for match in reversed(list(AMOUNT_PATTERN.finditer(prefix))):
+        if match.group(2) is None and _is_month_duration_after(prefix, match.end()):
+            continue
+        if _amount_gap_is_comfort_link(prefix[match.end() :]):
+            return _parse_amount(match.group(1), match.group(2))
+    return None
+
+
+def _amount_gap_is_comfort_link(gap: str) -> bool:
+    if len(gap) > 40:
+        return False
+    if _contains_any(gap, ("но", "сейчас", "плачу", "уходит")):
+        return False
+    return True
+
+
+def _first_comfortable_payment_context_index(text: str) -> int | None:
+    indexes = [
+        index
+        for pattern in COMFORTABLE_PAYMENT_CONTEXT_PATTERNS
+        if (index := text.find(pattern)) >= 0
+    ]
+    for pattern in (
+        r"\b(?:комфорт\w*|удобн\w*|нормальн\w*|посильн\w*)\b",
+        r"\b(?:могу|смогу|готов\w*)\b.{0,20}\bплат\w*\b",
+        r"\bмог\s+бы\b.{0,20}\bплат\w*\b",
+        r"\bхотелось\s+бы\b.{0,20}\bплат\w*\b",
+        r"\bтянуть\b.{0,20}\b(?:могу|смогу)\b",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            indexes.append(match.start())
+    return min(indexes) if indexes else None
+
+
+def _first_amount_start(text: str) -> int | None:
+    starts: list[int] = []
+    range_match = AMOUNT_RANGE_PATTERN.search(text)
+    if range_match:
+        starts.append(range_match.start())
+    amount_match = AMOUNT_PATTERN.search(text)
+    if amount_match:
+        starts.append(amount_match.start())
+    return min(starts) if starts else None
+
+
+def _normalize_payment_amount(amount: int | None) -> int | None:
+    if amount is not None and 0 < amount < 1_000:
+        return amount * 1_000
+    return amount
+
+
 def _can_extract_monthly_payment(text: str, last_slot: str | None) -> bool:
     monthly_context = _has_monthly_payment_context(text, last_slot)
     if not monthly_context:
+        return False
+    if _has_comfortable_payment_context(text) and not _has_explicit_current_payment_context(text):
         return False
     if last_slot in {"income_status", "comfortable_payment"}:
         return False
@@ -867,6 +1356,15 @@ def _state_bool(state: DialogueV3State | None, key: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _has_mortgage_property_slot_context(state: DialogueV3State | None) -> bool:
+    if state is None:
+        return False
+    if get_last_asked_slot(state) == "property_type":
+        return True
+    route = getattr(state, "route", None)
+    return getattr(route, "selected_route", None) in {MORTGAGE_MAIN, MORTGAGE_AUX}
+
+
 def get_last_asked_slot(state: DialogueV3State | None) -> str | None:
     """Return the last slot the assistant asked for, without selecting a route."""
 
@@ -895,11 +1393,15 @@ def _property_type_is_descriptive(text: str, property_word: str) -> bool:
     if property_word == "дом":
         if not re.search(r"\bдом\b", text):
             return False
+    elif property_word == "комната":
+        if "комната" not in text:
+            return False
     elif property_word not in text:
         return False
     intent_patterns = {
         "квартира": ("под квартиру", "рассмотреть под квартиру"),
         "дом": ("под дом", "рассмотреть под дом"),
+        "комната": ("под комнату", "рассмотреть под комнату"),
     }
     if _contains_any(text, intent_patterns.get(property_word, ())):
         return False
@@ -915,6 +1417,9 @@ def _find_amount_near(text: str, keywords: tuple[str, ...]) -> int | None:
         composite_amount = _first_composite_amount(window)
         if composite_amount is not None:
             return composite_amount
+        range_amount = _first_contextual_amount_range(window)
+        if range_amount is not None:
+            return range_amount
         match = AMOUNT_PATTERN.search(window)
         if match:
             return _parse_amount(match.group(1), match.group(2))

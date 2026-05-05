@@ -70,22 +70,27 @@ def test_bfl_rd_terminal_explains_handoff_and_post_terminal_clarifications_do_no
     assert "обещан" in lowered
     assert sixth.text.count("?") == 0
 
-    seventh = engine.handle_turn("Хорошо, а что дальше делать?", sixth.state)
+    seventh = engine.handle_turn("Хорошо, а что дальше?", sixth.state)
     seventh_lowered = seventh.text.lower()
 
+    assert seventh.extracted.facts["post_terminal_topic"] == "next_step"
+    assert seventh.frame.post_terminal_topic == "next_step"
     assert seventh.route_session.selected_route == BFL_RD
     assert seventh.actor_move.move_type == "post_terminal_answer"
+    assert seventh.actor_move.direct_answer_topic == "post_terminal_next_step"
     assert seventh.events == []
     assert seventh.route_session.selected_route != REPEAT_VISIT
     assert "специалист по долгам" in seventh_lowered
     assert seventh.text.count("?") == 0
 
     eighth = engine.handle_turn(
-        "А что значит отдельный разбор? Это банкротство или можно без него?",
+        "Это банкротство или можно без него?",
         seventh.state,
     )
     eighth_lowered = eighth.text.lower()
 
+    assert eighth.extracted.facts["post_terminal_topic"] == "bankruptcy_clarification"
+    assert eighth.frame.post_terminal_topic == "bankruptcy_clarification"
     assert eighth.actor_move.move_type == "post_terminal_answer"
     assert eighth.actor_move.direct_answer_topic == "bankruptcy_clarification"
     assert eighth.events == []
@@ -93,3 +98,12 @@ def test_bfl_rd_terminal_explains_handoff_and_post_terminal_clarifications_do_no
     assert "посильный график" in eighth_lowered or "реструктуризац" in eighth_lowered
     assert "обещан" in eighth_lowered
     assert eighth.text.count("?") == 0
+
+    ninth = engine.handle_turn("Кто со мной свяжется и когда ждать звонка?", eighth.state)
+
+    assert ninth.extracted.facts["post_terminal_topic"] == "contact_question"
+    assert ninth.frame.post_terminal_topic == "contact_question"
+    assert ninth.actor_move.move_type == "post_terminal_answer"
+    assert ninth.actor_move.direct_answer_topic == "post_terminal_contact"
+    assert ninth.events == []
+    assert ninth.text.count("?") == 0

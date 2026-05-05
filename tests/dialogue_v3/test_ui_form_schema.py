@@ -167,7 +167,7 @@ def test_assistant_collects_car_child_fact_after_root_car_signal() -> None:
         session_id="car-intake",
     )
 
-    result = DialogueV3Engine().handle_turn("Нужны деньги, авто есть.", state)
+    result = DialogueV3Engine().handle_turn("Можно рассмотреть под ПТС.", state)
 
     assert result.route_session.selected_route == "PTS"
     assert result.route_session.next_slot == "car_brand_model"

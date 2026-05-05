@@ -105,7 +105,7 @@ def plan_actor_move(
             phase=route_session.phase,
             next_slot=route_session.next_slot,
             off_topic_kind=frame.off_topic_kind,
-            question_goal=route_session.next_slot,
+            question_goal=_question_goal_for_slot(route_session.next_slot),
         )
 
     concern = _client_concern(frame)
@@ -116,7 +116,7 @@ def plan_actor_move(
             phase=route_session.phase,
             next_slot=route_session.next_slot,
             client_concern=concern,
-            question_goal=route_session.next_slot,
+            question_goal=_question_goal_for_slot(route_session.next_slot),
             must_not_say=["no_risk_promises"],
         )
 
@@ -127,10 +127,10 @@ def plan_actor_move(
             phase=route_session.phase,
             next_slot=route_session.next_slot,
             direct_answer_topic="customer_question",
-            question_goal=route_session.next_slot,
+            question_goal=_question_goal_for_slot(route_session.next_slot),
         )
 
-    post_terminal_topic = _post_terminal_topic(route_session, state)
+    post_terminal_topic = _post_terminal_topic(route_session, frame, state)
     if post_terminal_topic:
         return ActorMove(
             move_type="post_terminal_answer",
@@ -147,7 +147,7 @@ def plan_actor_move(
             selected_route=route_session.selected_route,
             phase=route_session.phase,
             next_slot=route_session.next_slot,
-            question_goal=route_session.next_slot,
+            question_goal=_question_goal_for_slot(route_session.next_slot),
         )
 
     if route_session.terminal_action:
@@ -185,6 +185,16 @@ def _client_concern(frame: CaseFrame) -> str | None:
     return None
 
 
+def _question_goal_for_slot(next_slot: str | None) -> str | None:
+    if next_slot == "collateral_preference":
+        return (
+            "Уточнить, готов ли клиент рассмотреть авто как способ усилить заявку, "
+            "если машина остается в пользовании. Не спрашивать марку, год, "
+            "собственника или ограничения до явного согласия клиента."
+        )
+    return next_slot
+
+
 def terminal_action_scope(terminal_action: str | None) -> str | None:
     """Describe an already selected terminal action for writer wording only."""
 
@@ -193,23 +203,18 @@ def terminal_action_scope(terminal_action: str | None) -> str | None:
     return ACTION_SCOPE_BY_ACTION_ID.get(terminal_action)
 
 
-POST_TERMINAL_NEXT_STEP_PATTERNS = (
-    "что дальше",
-    "что делать",
-    "что значит отдельный разбор",
-    "кто со мной свяжется",
-    "куда нажать",
-)
-POST_TERMINAL_BANKRUPTCY_PATTERNS = (
-    "это банкротство",
-    "можно без банкротства",
-    "без банкротства",
-    "банкротство или",
-    "банкротство или реструктуризация",
-)
+POST_TERMINAL_DIRECT_TOPIC_BY_FRAME_TOPIC = {
+    "next_step": "post_terminal_next_step",
+    "bankruptcy_clarification": "bankruptcy_clarification",
+    "contact_question": "post_terminal_contact",
+}
 
 
-def _post_terminal_topic(route_session: RouteSession, state: DialogueV3State | None) -> str | None:
+def _post_terminal_topic(
+    route_session: RouteSession,
+    frame: CaseFrame,
+    state: DialogueV3State | None,
+) -> str | None:
     """Return a clarification topic after the already emitted terminal action."""
 
     if state is None or not route_session.terminal_action:
@@ -218,19 +223,7 @@ def _post_terminal_topic(route_session: RouteSession, state: DialogueV3State | N
     if action_key not in state.emitted_terminal_actions:
         return None
 
-    last_user_text = _last_user_text(state).lower().replace("ё", "е")
-    if any(pattern in last_user_text for pattern in POST_TERMINAL_BANKRUPTCY_PATTERNS):
-        return "bankruptcy_clarification"
-    if any(pattern in last_user_text for pattern in POST_TERMINAL_NEXT_STEP_PATTERNS):
-        return "post_terminal_next_step"
-    return "post_terminal_next_step"
-
-
-def _last_user_text(state: DialogueV3State) -> str:
-    for message in reversed(state.messages):
-        if message.role == "user":
-            return message.content
-    return ""
+    return POST_TERMINAL_DIRECT_TOPIC_BY_FRAME_TOPIC.get(frame.post_terminal_topic)
 
 
 def build_terminal_known_facts(

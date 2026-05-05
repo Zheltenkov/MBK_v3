@@ -266,7 +266,7 @@ def test_llm_guarded_repair_keeps_route_and_uses_text_only_retry() -> None:
     result = DialogueV3Engine(
         writer_mode="llm_guarded",
         actor_writer=ActorWriter(mode="llm_guarded", llm_client=fake_client),
-    ).handle_turn("Нужны деньги, авто есть")
+    ).handle_turn("Можно рассмотреть под ПТС")
 
     assert result.route_session.selected_route == "PTS"
     assert result.actor_move.selected_route == "PTS"
@@ -287,7 +287,7 @@ def test_llm_guarded_falls_back_if_repair_is_still_invalid() -> None:
     result = DialogueV3Engine(
         writer_mode="llm_guarded",
         actor_writer=ActorWriter(mode="llm_guarded", llm_client=bad_client),
-    ).handle_turn("Нужны деньги, авто есть")
+    ).handle_turn("Можно рассмотреть под ПТС")
 
     assert result.route_session.selected_route == "PTS"
     assert result.writer_invalid is True

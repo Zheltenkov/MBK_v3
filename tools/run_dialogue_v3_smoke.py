@@ -57,6 +57,8 @@ class SmokeScenario:
     turns: list[str]
     expected_route: str
     expected_terminal_action: str | None = None
+    forbidden_routes: tuple[str, ...] = ()
+    require_no_terminal: bool = False
 
 
 SMOKE_SCENARIOS: list[SmokeScenario] = [
@@ -175,6 +177,28 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
         expected_route=DISCOVERY,
     ),
     SmokeScenario(
+        scenario_id="generic_new_money_no_terminal",
+        public_form={
+            "Есть текущие кредиты": "да",
+            "Есть авто": "да",
+        },
+        turns=["Хочу взять денег"],
+        expected_route=DISCOVERY,
+        require_no_terminal=True,
+    ),
+    SmokeScenario(
+        scenario_id="repair_car_no_pts_without_explicit_intent",
+        public_form={
+            "Сумма": "680000",
+            "Есть текущие кредиты": "да",
+            "Есть авто": "да",
+        },
+        turns=["Нужны деньги на ремонт машины"],
+        expected_route=DISCOVERY,
+        forbidden_routes=(PTS, MORTGAGE_MAIN, MORTGAGE_AUX, BFL_RD, BFL_RI),
+        require_no_terminal=True,
+    ),
+    SmokeScenario(
         scenario_id="cards_repair_ambiguous_no_mortgage",
         public_form={
             "Сумма": "645467",
@@ -184,6 +208,25 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
         },
         turns=["Хочу закрыть карты и немного оставить на ремонт"],
         expected_route=DISCOVERY,
+    ),
+    SmokeScenario(
+        scenario_id="s02_clean_cards_repair_no_bfl_before_pts",
+        public_form={
+            "Сумма": "680000",
+            "Есть текущие кредиты": "да",
+            "Есть авто": "да",
+            "Тип занятости": "найм",
+        },
+        turns=[
+            "Хочу закрыть две кредитные карты и немного оставить на ремонт машины.",
+            "Около 520 тысяч по двум кредитным картам.",
+            "Примерно 34 тысячи в месяц.",
+            "Официально работаю по найму, доход примерно 115 тысяч в месяц.",
+            "Просрочек нет, всё плачу по графику. Комфортно было бы где-то 25-28 тысяч в месяц.",
+        ],
+        expected_route=DISCOVERY,
+        forbidden_routes=(BFL_RD, BFL_RI, PTS, MORTGAGE_MAIN, MORTGAGE_AUX),
+        require_no_terminal=True,
     ),
     SmokeScenario(
         scenario_id="bfl_rd_multiturn_wants_to_pay",
@@ -347,6 +390,10 @@ def _run_scenario(
     )
     if not terminal_ok:
         violations.append("missing_terminal")
+    if scenario.require_no_terminal and terminal_action is not None:
+        violations.append("unexpected_terminal")
+    if scenario.forbidden_routes and final_route in scenario.forbidden_routes:
+        violations.append("forbidden_route")
 
     violations.extend(_scenario_violations(turns))
     unique_violations = sorted(set(violations))
@@ -389,10 +436,27 @@ def _turn_violations(turn_payload: dict[str, Any], scenario: SmokeScenario) -> l
     if turn_payload.get("writer_mode") != "deterministic" and _few_shot_body_copy(turn_payload):
         violations.append("few_shot_body_copy")
 
+    if scenario.scenario_id == "s02_clean_cards_repair_no_bfl_before_pts":
+        violations.extend(_s02_contextual_amount_violations(turn_payload))
+
     selected_route = turn_payload.get("selected_route")
     if scenario.expected_route != OTHER and selected_route == OTHER:
         violations.append("early_other")
 
+    return violations
+
+
+def _s02_contextual_amount_violations(turn_payload: dict[str, Any]) -> list[str]:
+    if turn_payload.get("turn") != 5:
+        return []
+    violations: list[str] = []
+    if turn_payload.get("next_slot") == "monthly_payments":
+        violations.append("s02_monthly_payments_reopened")
+    if turn_payload.get("next_slot") == "urgency":
+        violations.append("s02_urgency_reopened")
+    extracted_facts = turn_payload.get("extracted_facts") or {}
+    if "monthly_payments" in extracted_facts:
+        violations.append("s02_monthly_payments_reextracted")
     return violations
 
 
@@ -428,9 +492,14 @@ def _build_summary(scenario_results: list[dict[str, Any]]) -> dict[str, Any]:
 
     hard_zero_violations = {
         "empty_response",
+        "forbidden_route",
         "internal_words",
         "internal_workflow_term",
         "terminal_followup_question",
+        "unexpected_terminal",
+        "s02_monthly_payments_reopened",
+        "s02_monthly_payments_reextracted",
+        "s02_urgency_reopened",
         "few_shot_body_copy",
         "handoff_without_event",
         "early_other",

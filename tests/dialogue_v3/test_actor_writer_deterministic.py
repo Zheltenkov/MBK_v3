@@ -249,7 +249,26 @@ def test_mortgage_terminal_wording_is_specific_not_generic_basic_data() -> None:
     output = writer.write(move=move)
 
     assert "недвижимости" in output.body.lower()
+    assert "передам" in output.body.lower()
+    assert "специалист" in output.body.lower()
     assert "базовые данные собраны" not in output.body.lower()
+    assert ResponseGuard().validate(output=output, move=move).accepted
+
+
+def test_handoff_expert_post_terminal_explains_specialist_next_step_without_new_action() -> None:
+    writer = ActorWriter(mode="deterministic")
+    move = ActorMove(
+        move_type="post_terminal_answer",
+        selected_route="MORTGAGE_MAIN",
+        phase="READY_FOR_TERMINAL",
+        action_scope="handoff_expert",
+        direct_answer_topic="post_terminal_next_step",
+    )
+
+    output = writer.write(move=move)
+
+    assert "специалист" in output.body.lower()
+    assert "передам" not in output.body.lower()
     assert ResponseGuard().validate(output=output, move=move).accepted
 
 

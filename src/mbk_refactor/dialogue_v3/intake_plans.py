@@ -178,13 +178,23 @@ def primary_slots_for_route(route: str, frame: CaseFrame) -> list[str]:
     plan = get_intake_plan(route)
     if route != DISCOVERY:
         return list(plan.primary_slots)
-    return discovery_primary_slots(frame)
+    return get_discovery_primary_slots(frame)
 
 
-def discovery_primary_slots(frame: CaseFrame) -> list[str]:
+def get_discovery_primary_slots(frame: CaseFrame) -> list[str]:
     """Pick DISCOVERY slots from the known need without committing to a product route."""
 
-    if frame.need_type in {"debt_solution", "payment_reduction"}:
+    if frame.need_type == "debt_solution":
+        slots = [
+            "total_debt",
+            "monthly_payments",
+            "income_status",
+        ]
+        if frame.early_need_signal == "payment_reduction" or frame.high_payment_load:
+            slots.append("comfortable_payment")
+        slots.append("delinquency_context")
+        return slots
+    if frame.need_type == "payment_reduction":
         return [
             "total_debt",
             "monthly_payments",
@@ -192,7 +202,7 @@ def discovery_primary_slots(frame: CaseFrame) -> list[str]:
             "comfortable_payment",
             "delinquency_context",
         ]
-    if frame.early_need_signal == "repair_or_purpose":
+    if frame.early_need_signal == "repair_or_purpose" and frame.need_type in {"unknown", "new_money"}:
         return ["desired_amount_or_total_debt", "income_status", "urgency"]
     if frame.need_type == "new_money":
         return [
@@ -200,5 +210,12 @@ def discovery_primary_slots(frame: CaseFrame) -> list[str]:
             "income_status",
             "monthly_payments",
             "delinquency_context",
+            "urgency",
         ]
     return ["need_type"]
+
+
+def discovery_primary_slots(frame: CaseFrame) -> list[str]:
+    """Backward-compatible alias for tests/imports outside this module."""
+
+    return get_discovery_primary_slots(frame)

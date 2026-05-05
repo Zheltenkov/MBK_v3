@@ -11,6 +11,8 @@ from .intake_plans import get_intake_plan, primary_slots_for_route
 from .slot_resolver import resolve_primary_slots
 from .state import DialogueV3State
 
+DISCOVERY_COLLATERAL_BRIDGE_SLOT = "collateral_preference"
+
 RoutePhase = Literal[
     "DISCOVERY",
     "COLLECTING_PRIMARY_GATES",
@@ -71,15 +73,16 @@ def build_route_session(
         )
 
     if selected_route == DISCOVERY:
+        bridge_slot = None if resolution.next_slot else _discovery_bridge_slot(frame)
         return RouteSession(
             selected_route=selected_route,
             phase="DISCOVERY",
             primary_slots=primary_slots,
             closed_primary_slots=resolution.closed_primary_slots,
             missing_primary_slots=resolution.missing_primary_slots,
-            next_slot=resolution.next_slot,
+            next_slot=resolution.next_slot or bridge_slot,
             terminal_action=None,
-            reason_codes=["discovery_collect"] if resolution.next_slot else ["discovery_complete"],
+            reason_codes=_discovery_reason_codes(resolution.next_slot, bridge_slot),
         )
 
     if resolution.missing_primary_slots:
@@ -115,3 +118,40 @@ def _collect_blockers(selected_route: str, frame: CaseFrame) -> list[str]:
     ):
         blockers.append("vehicle_collateral_refused")
     return blockers
+
+
+def _discovery_reason_codes(next_slot: str | None, bridge_slot: str | None) -> list[str]:
+    if next_slot:
+        return ["discovery_collect"]
+    if bridge_slot:
+        return ["discovery_bridge"]
+    return ["discovery_complete"]
+
+
+def _discovery_bridge_slot(frame: CaseFrame) -> str | None:
+    """Offer a neutral bridge after clean debt discovery, without selecting PTS."""
+
+    if frame.need_type != "debt_solution":
+        return None
+    if frame.has_car is not True:
+        return None
+    if frame.explicit_pts_intent or frame.explicit_mortgage_intent:
+        return None
+    if frame.vehicle_refuses_collateral or frame.vehicle_hard_blocker:
+        return None
+    if frame.has_arrears or frame.has_mfo or frame.collector_pressure:
+        return None
+    if frame.high_payment_load or frame.payment_gap_large:
+        return None
+    if frame.client_wants_to_pay or frame.client_fears_bankruptcy:
+        return None
+    if frame.total_debt is None or frame.monthly_payments is None:
+        return None
+    income_known = (
+        frame.income_status != "unknown"
+        or frame.official_income is not None
+        or frame.other_income is not None
+    )
+    if not income_known:
+        return None
+    return DISCOVERY_COLLATERAL_BRIDGE_SLOT

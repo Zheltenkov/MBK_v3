@@ -72,6 +72,7 @@ class CaseFrame:
 
     direct_question: str | None = None
     off_topic_kind: str | None = None
+    post_terminal_topic: str = "unknown"
     customer_tone: Literal["neutral", "anxious", "irritated", "resistant", "cooperative"] = "neutral"
 
 
@@ -138,6 +139,7 @@ def build_case_frame(state: DialogueV3State) -> CaseFrame:
     frame.official_income = _int_value(state, "official_income")
     frame.other_income = _int_value(state, "other_income")
     frame.income_status = _str_value(state, "income_status", "unknown")  # type: ignore[assignment]
+    _derive_payment_load_flags(frame)
 
     frame.client_wants_to_pay = _bool_value(state, "client_wants_to_pay")
     frame.client_fears_bankruptcy = _bool_value(state, "client_fears_bankruptcy")
@@ -151,8 +153,22 @@ def build_case_frame(state: DialogueV3State) -> CaseFrame:
 
     frame.direct_question = _str_value(state, "direct_question")
     frame.off_topic_kind = _str_value(state, "off_topic_kind")
+    frame.post_terminal_topic = _str_value(state, "post_terminal_topic", "unknown")  # type: ignore[assignment]
     frame.customer_tone = _infer_customer_tone(frame)
     return frame
+
+
+def _derive_payment_load_flags(frame: CaseFrame) -> None:
+    """Normalize load flags from canonical amounts collected across turns."""
+
+    if (
+        isinstance(frame.monthly_payments, int)
+        and isinstance(frame.official_income, int)
+        and frame.official_income > 0
+    ):
+        frame.high_payment_load = frame.high_payment_load or frame.monthly_payments / frame.official_income >= 0.5
+    if isinstance(frame.monthly_payments, int) and isinstance(frame.comfortable_payment, int):
+        frame.payment_gap_large = frame.payment_gap_large or frame.monthly_payments > frame.comfortable_payment * 1.5
 
 
 def _has_fact(state: DialogueV3State, *keys: str) -> bool:

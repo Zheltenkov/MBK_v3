@@ -56,6 +56,9 @@ class DialogueV3State:
     def merge_extracted_turn(self, extracted: ExtractedTurn) -> None:
         """Apply extracted facts and per-turn signals."""
 
+        # This is a turn-scoped clarification signal; clear it before applying the
+        # current extraction so a previous "what next?" does not leak into later turns.
+        self.facts.pop("post_terminal_topic", None)
         self.merge_facts(extracted.facts, source="user")
 
         if extracted.service_signal:

@@ -183,11 +183,21 @@ def _restructuring_debt_pressure(frame: CaseFrame) -> bool:
     debt_numbers_known = frame.total_debt is not None and frame.monthly_payments is not None
     income_known = frame.income_status != "unknown" or frame.official_income is not None or frame.other_income is not None
     payment_resolution_signal = frame.comfortable_payment is not None or frame.client_wants_to_pay
+    debt_pressure_signal = (
+        frame.need_type == "payment_reduction"
+        or frame.early_need_signal == "payment_reduction"
+        or frame.high_payment_load
+        or frame.payment_gap_large
+        or frame.has_arrears
+        or frame.client_wants_to_pay
+        or frame.client_fears_bankruptcy
+    )
     return bool(
         debt_intent
         and debt_numbers_known
         and income_known
         and payment_resolution_signal
+        and debt_pressure_signal
     )
 
 

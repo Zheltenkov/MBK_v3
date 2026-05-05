@@ -21,7 +21,7 @@ def test_engine_never_returns_empty_assistant_response() -> None:
 
 
 def test_engine_full_one_turn_deterministic_flow_without_terminal_event() -> None:
-    user_message = "Нужны деньги, авто есть"
+    user_message = "Можно рассмотреть под ПТС"
 
     result = DialogueV3Engine().handle_turn(user_message)
 
@@ -57,7 +57,7 @@ def test_engine_full_one_turn_deterministic_flow_without_terminal_event() -> Non
 
 
 def test_engine_has_one_selected_route_per_turn() -> None:
-    result = DialogueV3Engine().handle_turn("Нужны деньги, авто есть")
+    result = DialogueV3Engine().handle_turn("Можно рассмотреть под ПТС")
 
     assert result.trace.selected_route == "PTS"
     assert isinstance(result.trace.selected_route, str)
@@ -66,7 +66,7 @@ def test_engine_has_one_selected_route_per_turn() -> None:
 
 def test_engine_pts_retention_does_not_create_handoff_before_primary_slots() -> None:
     engine = DialogueV3Engine()
-    first = engine.handle_turn("Нужны деньги, авто есть")
+    first = engine.handle_turn("Можно рассмотреть под ПТС")
     second = engine.handle_turn("Машину отдавать не буду, она для работы", first.state)
 
     assert second.trace.selected_route == "PTS"
@@ -76,7 +76,7 @@ def test_engine_pts_retention_does_not_create_handoff_before_primary_slots() -> 
 
 
 def test_engine_non_terminal_response_has_no_handoff_language() -> None:
-    result = DialogueV3Engine().handle_turn("Нужны деньги, авто есть")
+    result = DialogueV3Engine().handle_turn("Можно рассмотреть под ПТС")
 
     assert result.route_session.terminal_action is None
     assert result.events == []
