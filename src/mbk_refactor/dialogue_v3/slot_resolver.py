@@ -63,6 +63,22 @@ def is_slot_closed(slot: str, *, state: DialogueV3State, frame: CaseFrame) -> bo
         return frame.desired_amount is not None or frame.total_debt is not None
     if slot == "need_type":
         return _need_type_known(frame)
+    if slot == "collateral_preference":
+        return (
+            "collateral_preference" in state.asked_slots
+            or frame.explicit_pts_intent
+            or frame.explicit_mortgage_intent
+            or frame.vehicle_refuses_collateral
+            or frame.property_refuses_collateral
+        )
+    if slot == "bfl_property_context":
+        return _bfl_property_context_closed(state, frame)
+    if slot == "bfl_dependents_context":
+        return _bfl_dependents_context_closed(state)
+    if slot == "bfl_vehicle_context":
+        return _bfl_vehicle_context_closed(state, frame)
+    if slot == "previous_debt_procedure":
+        return _fact_known(state, "previous_debt_procedure")
 
     # Simple slots use direct fact names plus CaseFrame fields where available.
     if slot == "property_type":
@@ -87,6 +103,36 @@ def is_slot_closed(slot: str, *, state: DialogueV3State, frame: CaseFrame) -> bo
 
 def _fact_known(state: DialogueV3State, key: str) -> bool:
     return state.fact_value(key) is not None
+
+
+def _bfl_property_context_closed(state: DialogueV3State, frame: CaseFrame) -> bool:
+    if state.fact_value("bfl_property_context_known") is True:
+        return True
+    if frame.has_property is False:
+        return True
+    return bool(
+        frame.property_type
+        and frame.property_region
+        and frame.property_owner_known
+        and frame.property_encumbrance_known
+        and _fact_known(state, "is_only_housing")
+    )
+
+
+def _bfl_dependents_context_closed(state: DialogueV3State) -> bool:
+    if state.fact_value("bfl_dependents_context_known") is True:
+        return True
+    if state.fact_value("has_dependents") is False:
+        return True
+    return _fact_known(state, "dependents_count") or _fact_known(state, "dependent_relation")
+
+
+def _bfl_vehicle_context_closed(state: DialogueV3State, frame: CaseFrame) -> bool:
+    if state.fact_value("bfl_vehicle_context_known") is True:
+        return True
+    if frame.has_car is False:
+        return True
+    return frame.car_brand_model_known and frame.car_year is not None
 
 
 def _need_type_known(frame: CaseFrame) -> bool:

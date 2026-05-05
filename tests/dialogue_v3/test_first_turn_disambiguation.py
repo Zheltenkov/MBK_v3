@@ -17,7 +17,9 @@ def started_multi_direction_state():
         session_id="multi-direction",
     )
     assert state.messages[-1].role == "assistant"
-    assert "что для вас сейчас в первую очередь" in state.messages[-1].content.lower()
+    lowered = state.messages[-1].content.lower()
+    assert "деньги нужны на что в первую очередь" in lowered
+    assert "закрыть/объединить долги" in lowered
     assert state.turn_index == 0
     return state
 
@@ -60,4 +62,8 @@ def test_explicit_mortgage_first_turn_can_start_property_intake() -> None:
     )
 
     assert result.route_session.selected_route in {"MORTGAGE_MAIN", "MORTGAGE_AUX"}
-    assert result.route_session.next_slot == "property_type"
+    assert result.state.fact_value("property_type") == "apartment"
+    assert result.route_session.next_slot in {
+        "property_owner_or_ownership",
+        "property_encumbrance_basic",
+    }

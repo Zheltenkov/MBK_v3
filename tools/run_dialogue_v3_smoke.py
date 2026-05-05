@@ -55,7 +55,7 @@ class SmokeScenario:
     scenario_id: str
     public_form: dict[str, Any]
     turns: list[str]
-    expected_route: str
+    expected_route: str | tuple[str, ...]
     expected_terminal_action: str | None = None
 
 
@@ -102,6 +102,41 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
         },
         turns=["Квартира есть, но я боюсь потерять жилье."],
         expected_route=MORTGAGE_AUX,
+    ),
+    SmokeScenario(
+        scenario_id="mortgage_explicit_shortcut",
+        public_form={
+            "Сумма": "2800000",
+            "ФИО": "Алексей Романов",
+            "Есть текущие кредиты": "да",
+            "Тип занятости": "найм",
+            "Тип актива": "Недвижимость",
+            "Есть ли в собственности авто?": "нет",
+        },
+        turns=[
+            "Хочу взять около 2,8 млн под залог квартиры. Часть — закрыть кредиты, часть оставить на ремонт."
+        ],
+        expected_route=(MORTGAGE_MAIN, MORTGAGE_AUX),
+    ),
+    SmokeScenario(
+        scenario_id="mortgage_discovered_through_debt_funnel",
+        public_form={
+            "Сумма": "2800000",
+            "ФИО": "Алексей Романов",
+            "Есть текущие кредиты": "да",
+            "Тип занятости": "найм",
+            "Тип актива": "Недвижимость",
+            "Есть ли в собственности авто?": "нет",
+        },
+        turns=[
+            "Хочу закрыть кредиты и снизить ежемесячный платёж. Сейчас стало тяжело тянуть, плюс хотелось бы немного денег оставить на ремонт.",
+            "Примерно 1,1 млн.",
+            "Около 58 тысяч в месяц.",
+            "Около 170 тысяч, официально работаю по найму.",
+            "Просрочек нет, но комфортно было бы платить 35–40 тысяч.",
+            "Недвижимость можно посмотреть, но квартиру потерять я не хочу.",
+        ],
+        expected_route=(MORTGAGE_MAIN, MORTGAGE_AUX),
     ),
     SmokeScenario(
         scenario_id="mortgage_main_005_region_not_supported",
@@ -175,6 +210,17 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
         expected_route=DISCOVERY,
     ),
     SmokeScenario(
+        scenario_id="generic_new_money_no_terminal",
+        public_form={
+            "Сумма": "645467",
+            "Есть текущие кредиты": "да",
+            "Есть авто": "да",
+            "Есть недвижимость": "да",
+        },
+        turns=["Хочу взять денег"],
+        expected_route=DISCOVERY,
+    ),
+    SmokeScenario(
         scenario_id="cards_repair_ambiguous_no_mortgage",
         public_form={
             "Сумма": "645467",
@@ -184,6 +230,34 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
         },
         turns=["Хочу закрыть карты и немного оставить на ремонт"],
         expected_route=DISCOVERY,
+    ),
+    SmokeScenario(
+        scenario_id="repair_car_no_pts_without_explicit_intent",
+        public_form={
+            "Сумма": "645467",
+            "Есть текущие кредиты": "да",
+            "Есть авто": "да",
+            "Есть недвижимость": "да",
+        },
+        turns=["Нужны деньги на ремонт машины."],
+        expected_route=DISCOVERY,
+    ),
+    SmokeScenario(
+        scenario_id="s02_clean_cards_repair_no_bfl_before_pts",
+        public_form={
+            "Сумма": "680000",
+            "Есть текущие кредиты": "да",
+            "Есть авто": "да",
+        },
+        turns=[
+            "Нужно в основном закрыть две кредитки, и еще немного оставить на ремонт авто.",
+            "Там около 520 тысяч всего, это по двум картам.",
+            "Сейчас выходит примерно 34 тысячи в месяц.",
+            "Да, работаю официально по найму. Зарплата около 115 тысяч в месяц.",
+            "Просрочек нет, плачу вовремя. Но комфортнее было бы платить где-то 25-28 тысяч в месяц.",
+            "Машину как вариант можно обсуждать, но без того, чтобы ее забирать. Она нужна каждый день.",
+        ],
+        expected_route=PTS,
     ),
     SmokeScenario(
         scenario_id="bfl_rd_multiturn_wants_to_pay",
@@ -236,6 +310,13 @@ SMOKE_SCENARIOS: list[SmokeScenario] = [
     ),
 ]
 
+_MORTGAGE_NEXT_SLOTS = {
+    "property_region",
+    "property_owner_or_ownership",
+    "property_encumbrance_basic",
+    "property_type",
+}
+
 MIN_FEW_SHOT_BODY_COPY_LENGTH = 40
 FEW_SHOT_BODY_COPY_RATIO = 0.88
 FEW_SHOT_GOOD_BODIES: tuple[str, ...] | None = None
@@ -251,6 +332,11 @@ def main() -> int:
         for scenario in SMOKE_SCENARIOS
     ]
     summary = _build_summary(scenario_results)
+    llm_writer_verification = _llm_writer_verification(
+        args.writer_mode,
+        llm_status,
+        scenario_results,
+    )
 
     artifact_path = _write_artifact(
         payload={
@@ -258,6 +344,7 @@ def main() -> int:
             "writer_mode": args.writer_mode,
             "model_name": args.model_name,
             "llm_client": _to_plain(llm_status) if llm_status else {"available": False, "reason": "not requested"},
+            **llm_writer_verification,
             "summary": summary,
             "scenarios": scenario_results,
         },
@@ -268,6 +355,7 @@ def main() -> int:
         "model_name": args.model_name,
         "llm_client": _to_plain(llm_status) if llm_status else {"available": False, "reason": "not requested"},
         "artifact_path": str(artifact_path),
+        **llm_writer_verification,
         **summary,
         "scenarios": scenario_results,
     }
@@ -276,6 +364,46 @@ def main() -> int:
     if args.fail_on_violations and not summary["stop_criteria_ok"]:
         return 1
     return 0
+
+
+def _llm_writer_verification(
+    writer_mode: WriterMode,
+    llm_status: Any | None,
+    scenario_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Report whether an LLM smoke was an actual LLM writer pass."""
+
+    if writer_mode == "deterministic":
+        return {
+            "llm_writer_pass_verified": False,
+            "llm_writer_pass_status": "not_requested",
+        }
+    if llm_status is None or not getattr(llm_status, "available", False):
+        reason = getattr(llm_status, "reason", "llm client unavailable")
+        return {
+            "llm_writer_pass_verified": False,
+            "llm_writer_pass_status": f"unavailable: {reason}",
+        }
+
+    writer_error_count = 0
+    fallback_count = 0
+    for scenario in scenario_results:
+        for turn in scenario.get("turns", []):
+            if turn.get("writer_error"):
+                writer_error_count += 1
+            if turn.get("fallback_used"):
+                fallback_count += 1
+    if writer_error_count or fallback_count:
+        return {
+            "llm_writer_pass_verified": False,
+            "llm_writer_pass_status": (
+                f"unverified: writer_errors={writer_error_count}, fallback_used={fallback_count}"
+            ),
+        }
+    return {
+        "llm_writer_pass_verified": True,
+        "llm_writer_pass_status": "verified",
+    }
 
 
 def _parse_args() -> argparse.Namespace:
@@ -337,7 +465,7 @@ def _run_scenario(
     final_route = final_result.route_session.selected_route if final_result else None
     terminal_action = final_result.route_session.terminal_action if final_result else None
 
-    route_ok = final_route == scenario.expected_route
+    route_ok = final_route in _expected_routes(scenario)
     if not route_ok:
         violations.append("wrong_route")
 
@@ -348,12 +476,12 @@ def _run_scenario(
     if not terminal_ok:
         violations.append("missing_terminal")
 
-    violations.extend(_scenario_violations(turns))
+    violations.extend(_scenario_violations(turns, scenario))
     unique_violations = sorted(set(violations))
 
     return {
         "scenario_id": scenario.scenario_id,
-        "expected_route": scenario.expected_route,
+        "expected_route": _expected_route_payload(scenario),
         "expected_terminal_action": scenario.expected_terminal_action,
         "final_route": final_route,
         "route_ok": route_ok,
@@ -390,16 +518,178 @@ def _turn_violations(turn_payload: dict[str, Any], scenario: SmokeScenario) -> l
         violations.append("few_shot_body_copy")
 
     selected_route = turn_payload.get("selected_route")
-    if scenario.expected_route != OTHER and selected_route == OTHER:
+    if OTHER not in _expected_routes(scenario) and selected_route == OTHER:
         violations.append("early_other")
 
     return violations
 
 
-def _scenario_violations(turns: list[dict[str, Any]]) -> list[str]:
+def _scenario_violations(
+    turns: list[dict[str, Any]],
+    scenario: SmokeScenario,
+) -> list[str]:
+    violations: list[str] = []
     if _has_loop_same_slot(turns):
-        return ["loop_same_slot"]
-    return []
+        violations.append("loop_same_slot")
+
+    if scenario.scenario_id == "generic_new_money_no_terminal":
+        if any(turn.get("terminal_action") for turn in turns):
+            violations.append("unexpected_terminal_action")
+
+    if scenario.scenario_id == "repair_car_no_pts_without_explicit_intent":
+        if any(turn.get("selected_route") == PTS for turn in turns):
+            violations.append("repair_car_became_pts")
+        if any(turn.get("terminal_action") for turn in turns):
+            violations.append("unexpected_terminal_action")
+
+    if scenario.scenario_id == "s02_clean_cards_repair_no_bfl_before_pts":
+        pre_pts_turns = turns[:-1]
+        if any(
+            turn.get("selected_route") in {BFL_RD, BFL_RI}
+            or turn.get("terminal_action") == HANDOFF_BFL_SPECIALIST
+            for turn in pre_pts_turns
+        ):
+            violations.append("early_bfl_before_pts")
+        if any(turn.get("action_events") for turn in pre_pts_turns):
+            violations.append("early_action_event_before_pts")
+        if len(turns) >= 5 and turns[4].get("next_slot") in {"monthly_payments", "urgency"}:
+            violations.append("s02_bad_next_slot_before_pts")
+        if turns:
+            last_turn = turns[-1]
+            if last_turn.get("selected_route") != PTS:
+                violations.append("s02_did_not_switch_to_pts")
+            if last_turn.get("next_slot") != "car_brand_model":
+                violations.append("s02_wrong_pts_next_slot")
+            if last_turn.get("terminal_action"):
+                violations.append("unexpected_terminal_action")
+
+    if scenario.scenario_id == "mortgage_explicit_shortcut":
+        violations.extend(_mortgage_explicit_shortcut_violations(turns))
+
+    if scenario.scenario_id == "mortgage_discovered_through_debt_funnel":
+        violations.extend(_mortgage_discovered_funnel_violations(turns))
+
+    return violations
+
+
+def _expected_routes(scenario: SmokeScenario) -> set[str]:
+    expected_route = scenario.expected_route
+    if isinstance(expected_route, tuple):
+        return set(expected_route)
+    return {expected_route}
+
+
+def _expected_route_payload(scenario: SmokeScenario) -> str | list[str]:
+    expected_route = scenario.expected_route
+    if isinstance(expected_route, tuple):
+        return list(expected_route)
+    return expected_route
+
+
+def _mortgage_explicit_shortcut_violations(turns: list[dict[str, Any]]) -> list[str]:
+    violations: list[str] = []
+    if not turns:
+        return ["missing_turn_1"]
+    turn = turns[0]
+    facts = turn.get("extracted_facts") or {}
+    if turn.get("selected_route") not in {MORTGAGE_MAIN, MORTGAGE_AUX}:
+        violations.append("s01a_not_mortgage_shortcut")
+    if turn.get("selected_route") in {DISCOVERY, BFL_RD, OTHER}:
+        violations.append("s01a_wrong_route_family")
+    if turn.get("next_slot") not in _MORTGAGE_NEXT_SLOTS:
+        violations.append("s01a_next_slot_not_mortgage")
+    if turn.get("terminal_action") is not None:
+        violations.append("unexpected_terminal_action")
+    if turn.get("action_events"):
+        violations.append("unexpected_action_event")
+    if facts.get("explicit_mortgage_intent") is not True:
+        violations.append("s01a_missing_explicit_mortgage_intent")
+    if facts.get("property_type") != "apartment":
+        violations.append("s01a_missing_property_type_apartment")
+    if facts.get("need_type") != "debt_solution":
+        violations.append("s01a_missing_debt_solution_need")
+    if facts.get("purpose_goal") != "repair":
+        violations.append("s01a_missing_repair_purpose")
+    return violations
+
+
+def _mortgage_discovered_funnel_violations(turns: list[dict[str, Any]]) -> list[str]:
+    violations: list[str] = []
+    if len(turns) < 6:
+        return ["s01b_missing_turns"]
+
+    first, second, third, fourth, fifth, sixth = turns[:6]
+    if first.get("selected_route") in {MORTGAGE_MAIN, MORTGAGE_AUX}:
+        violations.append("s01b_mortgage_from_form_or_debt_only")
+    if first.get("selected_route") in {BFL_RD, BFL_RI, OTHER}:
+        violations.append("s01b_wrong_early_route")
+    if first.get("next_slot") != "total_debt":
+        violations.append("s01b_turn1_next_slot_not_total_debt")
+    if first.get("terminal_action") is not None or first.get("action_events"):
+        violations.append("unexpected_terminal_action")
+
+    if (second.get("extracted_facts") or {}).get("total_debt") != 1_100_000:
+        violations.append("s01b_turn2_total_debt_not_extracted")
+    if second.get("next_slot") != "monthly_payments":
+        violations.append("s01b_turn2_next_slot_not_monthly_payments")
+
+    if (third.get("extracted_facts") or {}).get("monthly_payments") != 58_000:
+        violations.append("s01b_turn3_monthly_payments_not_extracted")
+    if third.get("next_slot") != "income_status":
+        violations.append("s01b_turn3_next_slot_not_income_status")
+    if _claims_income_amount(third.get("assistant_text"), 58_000):
+        violations.append("s01b_turn3_claimed_payment_as_income")
+
+    fourth_facts = fourth.get("extracted_facts") or {}
+    if fourth_facts.get("official_income") != 170_000:
+        violations.append("s01b_turn4_income_not_extracted")
+    if fourth_facts.get("income_status") != "stable":
+        violations.append("s01b_turn4_income_status_not_stable")
+    if fourth.get("next_slot") not in {
+        "comfortable_payment",
+        "delinquency_context",
+        "collateral_preference",
+    }:
+        violations.append("s01b_turn4_unexpected_next_slot")
+
+    fifth_facts = fifth.get("extracted_facts") or {}
+    if fifth_facts.get("has_arrears") is not False:
+        violations.append("s01b_turn5_arrears_not_false")
+    if fifth_facts.get("comfortable_payment") not in {35_000, 40_000}:
+        violations.append("s01b_turn5_comfortable_payment_not_extracted")
+    if fifth.get("next_slot") != "collateral_preference":
+        violations.append("s01b_turn5_not_asking_collateral_preference")
+
+    sixth_facts = sixth.get("extracted_facts") or {}
+    if sixth_facts.get("property_risk_concern") is not True:
+        violations.append("s01b_turn6_property_risk_not_extracted")
+    if sixth_facts.get("property_refuses_collateral") is not False:
+        violations.append("s01b_turn6_property_refusal_false_missing")
+    if sixth.get("selected_route") not in {MORTGAGE_MAIN, MORTGAGE_AUX}:
+        violations.append("s01b_turn6_not_mortgage")
+    if sixth.get("next_slot") not in _MORTGAGE_NEXT_SLOTS:
+        violations.append("s01b_turn6_next_slot_not_mortgage")
+    if "риска нет" in str(sixth.get("assistant_text") or "").lower():
+        violations.append("s01b_turn6_promised_no_risk")
+    if sixth.get("terminal_action") is not None or sixth.get("action_events"):
+        violations.append("unexpected_terminal_action")
+
+    return violations
+
+
+def _claims_income_amount(text: object, amount: int) -> bool:
+    """Detect visible text that labels a known non-income amount as income."""
+
+    normalized = str(text or "").lower().replace("ё", "е")
+    if "доход" not in normalized:
+        return False
+    amount_thousands = amount // 1000
+    return bool(
+        re.search(rf"\bдоход\w*\b.{{0,80}}\b{amount}\b", normalized)
+        or re.search(rf"\bдоход\w*\b.{{0,80}}\b{amount_thousands}\s*(?:тыс|тысяч)\b", normalized)
+        or re.search(rf"\b{amount}\b.{{0,80}}\bдоход\w*\b", normalized)
+        or re.search(rf"\b{amount_thousands}\s*(?:тыс|тысяч)\b.{{0,80}}\bдоход\w*\b", normalized)
+    )
 
 
 def _has_loop_same_slot(turns: list[dict[str, Any]]) -> bool:
@@ -415,6 +705,9 @@ def _handoff_without_event(turn_payload: dict[str, Any]) -> bool:
     text = str(turn_payload.get("assistant_text", "")).lower()
     has_handoff_language = any(marker in text for marker in HANDOFF_LANGUAGE)
     has_events = bool(turn_payload.get("action_events"))
+    actor_move = turn_payload.get("actor_move") or {}
+    if isinstance(actor_move, dict) and actor_move.get("move_type") == "recommendation_offer":
+        return False
     terminal_action = turn_payload.get("terminal_action")
     return has_handoff_language and (not terminal_action or not has_events)
 

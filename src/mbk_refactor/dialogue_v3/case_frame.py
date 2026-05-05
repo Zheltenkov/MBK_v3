@@ -72,6 +72,7 @@ class CaseFrame:
 
     direct_question: str | None = None
     off_topic_kind: str | None = None
+    post_terminal_topic: str = "unknown"
     customer_tone: Literal["neutral", "anxious", "irritated", "resistant", "cooperative"] = "neutral"
 
 
@@ -151,6 +152,7 @@ def build_case_frame(state: DialogueV3State) -> CaseFrame:
 
     frame.direct_question = _str_value(state, "direct_question")
     frame.off_topic_kind = _str_value(state, "off_topic_kind")
+    frame.post_terminal_topic = _str_value(state, "post_terminal_topic", "unknown")  # type: ignore[assignment]
     frame.customer_tone = _infer_customer_tone(frame)
     return frame
 

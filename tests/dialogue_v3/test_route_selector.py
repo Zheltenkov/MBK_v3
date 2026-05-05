@@ -9,10 +9,13 @@ from mbk_refactor.dialogue_v3.constants import (
     BFL_RI,
     DISCOVERY,
     FRAUD_CHECK,
+    MICRO,
     MORTGAGE_AUX,
     MORTGAGE_MAIN,
+    OTHER,
     PTS,
     REPEAT_VISIT,
+    UNSECURED,
 )
 from mbk_refactor.dialogue_v3.route_session import build_route_session
 from mbk_refactor.dialogue_v3.routes import select_route
@@ -225,3 +228,93 @@ def test_no_stable_income_and_severe_arrears_selects_bfl_ri() -> None:
     )
 
     assert select_route(build_case_frame(state), state) == BFL_RI
+
+
+def test_clean_card_goal_without_debt_pressure_stays_non_terminal_product_funnel() -> None:
+    state = state_with_facts(
+        {
+            "desired_amount": 400_000,
+            "need_type": "debt_solution",
+            "early_need_signal": "debt_solution",
+            "has_current_loans": True,
+            "loan_types_known": True,
+            "loan_types": ("credit_cards",),
+            "monthly_payments": 10_000,
+            "income_status": "stable",
+            "has_arrears": False,
+            "collector_pressure": False,
+        }
+    )
+
+    route = select_route(build_case_frame(state), state)
+
+    assert route in {DISCOVERY, UNSECURED, MICRO}
+    assert route not in {BFL_RD, BFL_RI, OTHER}
+
+
+def test_clean_debt_without_collateral_exits_completed_discovery_to_unsecured() -> None:
+    state = state_with_facts(
+        {
+            "need_type": "debt_solution",
+            "early_need_signal": "debt_solution",
+            "has_current_loans": True,
+            "total_debt": 400_000,
+            "monthly_payments": 10_000,
+            "income_status": "stable",
+            "comfortable_payment": 8_000,
+            "has_arrears": False,
+            "loan_types_known": True,
+            "loan_types": ("credit_cards",),
+        }
+    )
+    frame = build_case_frame(state)
+    route = select_route(frame, state)
+    session = build_route_session(route, state=state, frame=frame)
+
+    assert route == UNSECURED
+    assert session.phase == "READY_FOR_TERMINAL"
+    assert session.next_slot is None
+    assert session.terminal_action == "SELF_SERVE_LINKS_3"
+
+
+def test_clean_debt_with_collateral_stays_discovery_for_collateral_preference() -> None:
+    state = state_with_facts(
+        {
+            "need_type": "debt_solution",
+            "early_need_signal": "debt_solution",
+            "has_current_loans": True,
+            "has_car": True,
+            "total_debt": 400_000,
+            "monthly_payments": 10_000,
+            "income_status": "stable",
+            "comfortable_payment": 8_000,
+            "has_arrears": False,
+            "loan_types_known": True,
+            "loan_types": ("credit_cards",),
+        }
+    )
+    frame = build_case_frame(state)
+    route = select_route(frame, state)
+    session = build_route_session(route, state=state, frame=frame)
+
+    assert route == DISCOVERY
+    assert session.next_slot == "collateral_preference"
+
+
+def test_small_amount_with_heavy_debt_pressure_does_not_select_micro() -> None:
+    state = state_with_facts(
+        {
+            "desired_amount": 80_000,
+            "has_current_loans": True,
+            "has_mfo": True,
+            "has_arrears": True,
+            "arrears_months": 3.0,
+            "collector_pressure": True,
+            "income_status": "unstable",
+        }
+    )
+
+    route = select_route(build_case_frame(state), state)
+
+    assert route == BFL_RI
+    assert route != MICRO

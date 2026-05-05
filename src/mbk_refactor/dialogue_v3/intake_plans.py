@@ -29,6 +29,7 @@ from .constants import (
 
 if TYPE_CHECKING:
     from .case_frame import CaseFrame
+    from .state import DialogueV3State
 
 
 @dataclass(frozen=True)
@@ -172,26 +173,56 @@ def get_intake_plan(route: str) -> IntakePlan:
         raise ValueError(f"unknown route: {route}") from exc
 
 
-def primary_slots_for_route(route: str, frame: CaseFrame) -> list[str]:
+def primary_slots_for_route(
+    route: str,
+    frame: CaseFrame,
+    state: DialogueV3State | None = None,
+) -> list[str]:
     """Return route primary slots, with DISCOVERY staying router-neutral."""
 
     plan = get_intake_plan(route)
     if route != DISCOVERY:
-        return list(plan.primary_slots)
+        slots = list(plan.primary_slots)
+        if route in {BFL_RD, BFL_RI}:
+            slots.extend(_bfl_risk_slots(frame, state))
+        return slots
     return discovery_primary_slots(frame)
+
+
+def _bfl_risk_slots(frame: CaseFrame, state: DialogueV3State | None) -> list[str]:
+    """Add short BFL risk-context slots only when root facts make them relevant."""
+
+    slots: list[str] = []
+    has_property = frame.has_property is True or _state_asset_type_is_property(state)
+    has_dependents = _state_bool(state, "has_dependents") is True
+    has_car = frame.has_car is True
+
+    if has_property:
+        slots.append("bfl_property_context")
+    if has_dependents:
+        slots.append("bfl_dependents_context")
+    if has_car:
+        slots.append("bfl_vehicle_context")
+    if has_property or has_dependents or has_car:
+        slots.append("previous_debt_procedure")
+    return slots
 
 
 def discovery_primary_slots(frame: CaseFrame) -> list[str]:
     """Pick DISCOVERY slots from the known need without committing to a product route."""
 
     if frame.need_type in {"debt_solution", "payment_reduction"}:
-        return [
+        slots = [
             "total_debt",
             "monthly_payments",
             "income_status",
             "comfortable_payment",
             "delinquency_context",
         ]
+        if frame.has_car is True or frame.has_property is True:
+            slots.append("collateral_preference")
+        slots.append("loan_types")
+        return slots
     if frame.early_need_signal == "repair_or_purpose":
         return ["desired_amount_or_total_debt", "income_status", "urgency"]
     if frame.need_type == "new_money":
@@ -202,3 +233,19 @@ def discovery_primary_slots(frame: CaseFrame) -> list[str]:
             "delinquency_context",
         ]
     return ["need_type"]
+
+
+def _state_bool(state: DialogueV3State | None, key: str) -> bool | None:
+    if state is None:
+        return None
+    value = state.fact_value(key)
+    return value if isinstance(value, bool) else None
+
+
+def _state_asset_type_is_property(state: DialogueV3State | None) -> bool:
+    if state is None:
+        return False
+    value = state.fact_value("asset_type")
+    if not isinstance(value, str):
+        return False
+    return "недвиж" in value.lower().replace("ё", "е")

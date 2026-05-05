@@ -30,6 +30,8 @@ class DialogueV3State:
     closed_slot_groups: set[str] = field(default_factory=set)
     rejected_routes: set[str] = field(default_factory=set)
     accepted_route: str | None = None
+    pending_route: str | None = None
+    pending_terminal_action: str | None = None
     service_mode: str = "normal_credit_case"
     trace_history: list[dict[str, object]] = field(default_factory=list)
     emitted_terminal_actions: set[str] = field(default_factory=set)
@@ -56,6 +58,9 @@ class DialogueV3State:
     def merge_extracted_turn(self, extracted: ExtractedTurn) -> None:
         """Apply extracted facts and per-turn signals."""
 
+        # This is a turn-scoped clarification signal; clear it before applying the
+        # current extraction so a previous "what next?" does not leak into later turns.
+        self.facts.pop("post_terminal_topic", None)
         self.merge_facts(extracted.facts, source="user")
 
         if extracted.service_signal:

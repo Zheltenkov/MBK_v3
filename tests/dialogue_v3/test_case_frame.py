@@ -17,7 +17,7 @@ def state_from_messages(messages: list[str]) -> DialogueV3State:
 def test_pts_retention_is_not_refusal() -> None:
     state = state_from_messages(
         [
-            "Нужны деньги, авто есть",
+            "У меня есть машина",
             "Машину отдавать не буду, она для работы",
         ]
     )

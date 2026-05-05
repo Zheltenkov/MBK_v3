@@ -329,7 +329,16 @@ def _handle_user_turn() -> None:
 
     st.session_state["v3_state"] = result.state
     st.session_state["last_result"] = result
-    st.session_state["last_error"] = ""
+    if result.writer_error:
+        st.session_state["last_error"] = result.writer_error
+        if isinstance(llm_status, LLMClientStatus) and llm_status.available:
+            st.session_state["last_llm_status"] = LLMClientStatus(
+                available=False,
+                reason=result.writer_error,
+                model_name=llm_status.model_name,
+            )
+    else:
+        st.session_state["last_error"] = ""
     st.session_state["turn_records"].append(_turn_record(result))
     st.rerun()
 
@@ -462,10 +471,10 @@ def build_form_opening_message(state: DialogueV3State) -> str:
     facts_summary = _opening_root_facts_summary(state)
     facts_clause = f" {facts_summary}" if facts_summary else ""
     return (
-        f"{greeting} Заявку вижу.{facts_clause} "
-        "Чтобы не гадать с продуктом, сначала уточню главное: "
-        "что для вас сейчас в первую очередь - закрыть долги или карты, "
-        "снизить ежемесячный платеж, получить сумму на руки или другая задача?"
+        f"{greeting} Заявку вижу.{facts_clause}\n\n"
+        "Чтобы подобрать нормальный вариант, уточню главное: "
+        "деньги нужны на что в первую очередь — закрыть/объединить долги, "
+        "снизить ежемесячный платёж, получить сумму на руки или другая задача?"
     )
 
 
@@ -672,6 +681,7 @@ def _turn_record(result: DialogueV3TurnResult) -> dict[str, Any]:
         "writer_invalid": result.writer_invalid,
         "repair_attempted": result.repair_attempted,
         "fallback_used": result.fallback_used,
+        "writer_error": result.writer_error,
         "trace": result.trace.to_dict(),
     }
 
@@ -688,6 +698,7 @@ def _debug_top_payload(result: DialogueV3TurnResult, trace: dict[str, Any]) -> d
         ],
         "fallback_used": result.fallback_used,
         "writer_invalid": result.writer_invalid,
+        "writer_error": result.writer_error,
     }
 
 

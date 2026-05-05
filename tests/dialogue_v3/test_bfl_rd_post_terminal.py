@@ -62,34 +62,72 @@ def test_bfl_rd_terminal_explains_handoff_and_post_terminal_clarifications_do_no
     lowered = sixth.text.lower()
 
     assert sixth.route_session.selected_route == BFL_RD
-    assert sixth.route_session.terminal_action == HANDOFF_BFL_SPECIALIST
-    assert [event.action_id for event in sixth.events] == [HANDOFF_BFL_SPECIALIST]
+    assert sixth.route_session.terminal_action is None
+    assert sixth.route_session.next_slot == "bfl_property_context"
+    assert sixth.events == []
     assert sixth.state.fact_value("total_debt") == 1_450_000
-    assert "передам специалисту по долгам" in lowered
-    assert "платеж" in lowered or "нагруз" in lowered
-    assert "обещан" in lowered
-    assert sixth.text.count("?") == 0
+    assert "недвижимость" in lowered
+    assert sixth.text.count("?") == 1
 
-    seventh = engine.handle_turn("Хорошо, а что дальше делать?", sixth.state)
-    seventh_lowered = seventh.text.lower()
-
-    assert seventh.route_session.selected_route == BFL_RD
-    assert seventh.actor_move.move_type == "post_terminal_answer"
-    assert seventh.events == []
-    assert seventh.route_session.selected_route != REPEAT_VISIT
-    assert "специалист по долгам" in seventh_lowered
-    assert seventh.text.count("?") == 0
-
-    eighth = engine.handle_turn(
-        "А что значит отдельный разбор? Это банкротство или можно без него?",
-        seventh.state,
+    seventh = engine.handle_turn(
+        "Квартира в Москве, я собственник, единственное жилье, ипотеки и арестов нет.",
+        sixth.state,
     )
-    eighth_lowered = eighth.text.lower()
+    assert seventh.route_session.next_slot == "bfl_vehicle_context"
 
-    assert eighth.actor_move.move_type == "post_terminal_answer"
-    assert eighth.actor_move.direct_answer_topic == "bankruptcy_clarification"
-    assert eighth.events == []
-    assert "не обязательно банкротство" in eighth_lowered
-    assert "посильный график" in eighth_lowered or "реструктуризац" in eighth_lowered
-    assert "обещан" in eighth_lowered
-    assert eighth.text.count("?") == 0
+    eighth = engine.handle_turn("Kia Rio 2019 года.", seventh.state)
+    assert eighth.route_session.next_slot == "previous_debt_procedure"
+
+    ninth = engine.handle_turn("Раньше банкротства или реструктуризации не было.", eighth.state)
+    ninth_lowered = ninth.text.lower()
+    assert ninth.route_session.selected_route == BFL_RD
+    assert ninth.route_session.terminal_action == HANDOFF_BFL_SPECIALIST
+    assert ninth.actor_move.move_type == "recommendation_offer"
+    assert ninth.actor_move.pending_terminal_action == HANDOFF_BFL_SPECIALIST
+    assert ninth.events == []
+    assert "передать вас специалисту по долгам" in ninth_lowered
+    assert "платеж" in ninth_lowered or "нагруз" in ninth_lowered
+    assert "не обещаю" in ninth_lowered
+    assert ninth.text.count("?") == 1
+
+    tenth = engine.handle_turn("Да, передавайте.", ninth.state)
+    assert [event.action_id for event in tenth.events] == [HANDOFF_BFL_SPECIALIST]
+    assert tenth.state.pending_terminal_action is None
+
+    eleventh = engine.handle_turn("Хорошо, а что дальше?", tenth.state)
+    eleventh_lowered = eleventh.text.lower()
+
+    assert eleventh.extracted.facts["post_terminal_topic"] == "next_step"
+    assert eleventh.frame.post_terminal_topic == "next_step"
+    assert eleventh.route_session.selected_route == BFL_RD
+    assert eleventh.actor_move.move_type == "post_terminal_answer"
+    assert eleventh.actor_move.direct_answer_topic == "post_terminal_next_step"
+    assert eleventh.events == []
+    assert eleventh.route_session.selected_route != REPEAT_VISIT
+    assert "специалист по долгам" in eleventh_lowered
+    assert eleventh.text.count("?") == 0
+
+    twelfth = engine.handle_turn(
+        "Это банкротство или можно без него?",
+        eleventh.state,
+    )
+    twelfth_lowered = twelfth.text.lower()
+
+    assert twelfth.extracted.facts["post_terminal_topic"] == "bankruptcy_clarification"
+    assert twelfth.frame.post_terminal_topic == "bankruptcy_clarification"
+    assert twelfth.actor_move.move_type == "post_terminal_answer"
+    assert twelfth.actor_move.direct_answer_topic == "bankruptcy_clarification"
+    assert twelfth.events == []
+    assert "не обязательно банкротство" in twelfth_lowered
+    assert "посильный график" in twelfth_lowered or "реструктуризац" in twelfth_lowered
+    assert "обещан" in twelfth_lowered
+    assert twelfth.text.count("?") == 0
+
+    thirteenth = engine.handle_turn("Кто со мной свяжется и когда ждать звонка?", twelfth.state)
+
+    assert thirteenth.extracted.facts["post_terminal_topic"] == "contact_question"
+    assert thirteenth.frame.post_terminal_topic == "contact_question"
+    assert thirteenth.actor_move.move_type == "post_terminal_answer"
+    assert thirteenth.actor_move.direct_answer_topic == "post_terminal_contact"
+    assert thirteenth.events == []
+    assert thirteenth.text.count("?") == 0

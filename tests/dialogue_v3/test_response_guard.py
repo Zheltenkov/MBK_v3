@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from mbk_refactor.dialogue_v3.actions import ActionEvent
+from mbk_refactor.dialogue_v3.constants import HANDOFF_EXPERT, PTS, SELF_SERVE_LINKS_3, UNSECURED
 from mbk_refactor.dialogue_v3.moves import ActorMove
 from mbk_refactor.dialogue_v3.response_guard import ResponseGuard
 from mbk_refactor.dialogue_v3.safe_fallback import ActorWriterOutput
@@ -46,6 +49,29 @@ def test_guard_rejects_forbidden_guarantees() -> None:
     assert "forbidden_claim" in validation.issue_codes
 
 
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Имущество точно не затронут.",
+        "Квартиру точно сохраните.",
+        "Машину точно не затронут.",
+    ],
+)
+def test_guard_rejects_bfl_asset_safety_guarantees(claim: str) -> None:
+    move = ActorMove(
+        move_type="recommendation_offer",
+        selected_route="BFL_RD",
+        phase="READY_FOR_TERMINAL",
+        pending_route="BFL_RD",
+        pending_terminal_action="HANDOFF_BFL_SPECIALIST",
+    )
+
+    validation = validate_text(claim, move)
+
+    assert not validation.accepted
+    assert "forbidden_claim" in validation.issue_codes
+
+
 def test_guard_rejects_handoff_language_without_terminal_action() -> None:
     move = ActorMove(move_type="ask_slot", selected_route="PTS", phase="COLLECTING", next_slot="car_year")
 
@@ -53,6 +79,134 @@ def test_guard_rejects_handoff_language_without_terminal_action() -> None:
 
     assert not validation.accepted
     assert "handoff_without_action" in validation.issue_codes
+
+
+def test_guard_allows_recommendation_offer_consent_question_without_event() -> None:
+    move = ActorMove(
+        move_type="recommendation_offer",
+        selected_route="PTS",
+        phase="READY_FOR_TERMINAL",
+        pending_route="PTS",
+        pending_terminal_action="HANDOFF_EXPERT",
+    )
+    output = ActorWriterOutput(
+        body="По машине картина понятна. Условия заранее не обещаю.",
+        followup_question="Передать вас специалисту?",
+    )
+
+    validation = ResponseGuard().validate(output=output, move=move, events=[])
+
+    assert validation.accepted
+
+
+def test_guard_rejects_followup_question_for_different_vehicle_slot() -> None:
+    move = ActorMove(
+        move_type="ask_slot",
+        selected_route="PTS",
+        phase="COLLECTING",
+        next_slot="car_brand_model",
+        question_goal="car_brand_model",
+    )
+    output = ActorWriterOutput(followup_question="Какого года автомобиль?")
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert not validation.accepted
+    assert "question_goal_mismatch" in validation.issue_codes
+
+
+def test_guard_rejects_income_amount_invented_from_monthly_payment() -> None:
+    move = ActorMove(
+        move_type="ask_slot",
+        selected_route="DISCOVERY",
+        phase="DISCOVERY",
+        next_slot="income_status",
+        question_goal="income_status",
+        known_facts={
+            "monthly_payments": 58_000,
+            "official_income": None,
+            "other_income": None,
+        },
+    )
+    output = ActorWriterOutput(
+        body="58 тысяч в месяц - это важная цифра.",
+        followup_question="Доход у вас в месяц примерно 58 тысяч - он официальный или нет?",
+    )
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert not validation.accepted
+    assert "income_amount_invented_from_monthly_payment" in validation.issue_codes
+
+
+@pytest.mark.parametrize(
+    ("slot", "question"),
+    [
+        ("total_debt", "Сколько сейчас всего задолженности по картам и кредитам?"),
+        ("monthly_payments", "Сколько сейчас уходит в месяц на платежи?"),
+        ("income_status", "Какой у вас сейчас доход и он официальный?"),
+        ("comfortable_payment", "Какой платеж был бы комфортным?"),
+        ("delinquency_context", "Просрочки уже есть или пока платите без задержек?"),
+        ("collateral_preference", "Можно ли рассмотреть авто или недвижимость?"),
+        ("car_brand_model", "Какая у вас машина: марка и модель?"),
+        ("car_year", "Какого года автомобиль?"),
+        ("car_owner", "На кого оформлен автомобиль?"),
+        ("car_pledge_or_restrictions", "Автомобиль в залоге, автокредите, аресте или с ограничениями?"),
+        ("property_type", "Это квартира, дом или другой объект?"),
+        ("property_owner_or_ownership", "На кого оформлена недвижимость?"),
+        ("property_encumbrance_basic", "Есть ли ипотека, залог, арест или другие обременения?"),
+    ],
+)
+def test_guard_accepts_followup_question_matching_question_goal(slot: str, question: str) -> None:
+    move = ActorMove(
+        move_type="ask_slot",
+        selected_route="DISCOVERY",
+        phase="COLLECTING",
+        next_slot=slot,
+        question_goal=slot,
+    )
+    output = ActorWriterOutput(followup_question=question)
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert validation.accepted
+
+
+@pytest.mark.parametrize(
+    "slot",
+    [
+        "total_debt",
+        "monthly_payments",
+        "income_status",
+        "comfortable_payment",
+        "delinquency_context",
+        "collateral_preference",
+        "car_brand_model",
+        "car_year",
+        "car_owner",
+        "car_pledge_or_restrictions",
+        "property_type",
+        "property_owner_or_ownership",
+        "property_encumbrance_basic",
+    ],
+)
+def test_guard_rejects_followup_question_not_matching_question_goal(slot: str) -> None:
+    move = ActorMove(
+        move_type="ask_slot",
+        selected_route="DISCOVERY",
+        phase="COLLECTING",
+        next_slot=slot,
+        question_goal=slot,
+    )
+    output = ActorWriterOutput(followup_question="Какого года автомобиль?")
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    if slot == "car_year":
+        assert validation.accepted
+    else:
+        assert not validation.accepted
+        assert "question_goal_mismatch" in validation.issue_codes
 
 
 def test_guard_allows_post_terminal_specialist_reference_without_new_action_language() -> None:
@@ -89,6 +243,23 @@ def test_guard_accepts_handoff_language_with_terminal_action_and_event() -> None
     assert validation.accepted
 
 
+def test_guard_rejects_handoff_expert_terminal_without_specialist_next_step() -> None:
+    move = ActorMove(
+        move_type="terminal_action",
+        selected_route="MORTGAGE_MAIN",
+        phase="READY_FOR_TERMINAL",
+        terminal_action="HANDOFF_EXPERT",
+    )
+    output = ActorWriterOutput(
+        body="Ситуация по квартире уже понятна. Для такого случая дальше нужен профильный разбор без обещаний заранее."
+    )
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert not validation.accepted
+    assert "handoff_next_step_missing" in validation.issue_codes
+
+
 def test_guard_rejects_terminal_action_without_matching_event() -> None:
     move = ActorMove(
         move_type="terminal_action",
@@ -102,6 +273,72 @@ def test_guard_rejects_terminal_action_without_matching_event() -> None:
 
     assert not validation.accepted
     assert "missing_action_event" in validation.issue_codes
+
+
+def test_guard_rejects_self_serve_text_with_specialist_handoff_language() -> None:
+    move = ActorMove(
+        move_type="terminal_action",
+        selected_route=UNSECURED,
+        phase="READY_FOR_TERMINAL",
+        terminal_action=SELF_SERVE_LINKS_3,
+    )
+    output = ActorWriterOutput(body="Передам специалисту, он посмотрит машину и документы.")
+    events = [ActionEvent(action_id=SELF_SERVE_LINKS_3, selected_route=UNSECURED, payload={})]
+
+    validation = ResponseGuard().validate(output=output, move=move, events=events)
+
+    assert not validation.accepted
+    assert "self_serve_handoff_language" in validation.issue_codes
+    assert "unsecured_vehicle_handoff_language" in validation.issue_codes
+
+
+def test_guard_rejects_unsecured_vehicle_specific_specialist_check() -> None:
+    move = ActorMove(
+        move_type="ask_slot",
+        selected_route=UNSECURED,
+        phase="COLLECTING",
+        next_slot="income_status",
+    )
+    output = ActorWriterOutput(body="Профильный специалист посмотрит авто, а пока уточним доход.")
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert not validation.accepted
+    assert "unsecured_vehicle_handoff_language" in validation.issue_codes
+
+
+def test_guard_allows_pts_recommendation_offer_vehicle_handoff_question() -> None:
+    move = ActorMove(
+        move_type="recommendation_offer",
+        selected_route=PTS,
+        phase="READY_FOR_TERMINAL",
+        pending_route=PTS,
+        pending_terminal_action=HANDOFF_EXPERT,
+    )
+    output = ActorWriterOutput(
+        body="По машине картина понятна.",
+        followup_question="Передать вас специалисту, чтобы он проверил авто и документы?",
+    )
+
+    validation = ResponseGuard().validate(output=output, move=move, events=[])
+
+    assert validation.accepted
+
+
+def test_guard_rejects_vehicle_handoff_language_when_backend_route_is_not_pts() -> None:
+    move = ActorMove(
+        move_type="terminal_action",
+        selected_route=UNSECURED,
+        phase="READY_FOR_TERMINAL",
+        terminal_action=HANDOFF_EXPERT,
+    )
+    output = ActorWriterOutput(body="Передаю специалисту: он посмотрит машину и документы.")
+    events = [ActionEvent(action_id=HANDOFF_EXPERT, selected_route=UNSECURED, payload={})]
+
+    validation = ResponseGuard().validate(output=output, move=move, events=events)
+
+    assert not validation.accepted
+    assert "vehicle_handoff_backend_mismatch" in validation.issue_codes
 
 
 def test_guard_rejects_terminal_action_with_non_empty_followup_question() -> None:

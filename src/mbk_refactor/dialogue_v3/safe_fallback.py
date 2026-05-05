@@ -55,6 +55,9 @@ def render_safe_fallback(move: ActorMove) -> ActorWriterOutput:
     if move.move_type == "post_terminal_answer":
         return ActorWriterOutput(body=_post_terminal_body(move))
 
+    if move.move_type == "recommendation_offer":
+        return recommendation_offer_output(move)
+
     if move.move_type in {"terminal_action", "no_solution_manual_review"}:
         if move.action_scope == "bfl_handoff":
             return ActorWriterOutput(
@@ -80,67 +83,67 @@ def deterministic_output_for_slot(slot: str) -> ActorWriterOutput:
 
     outputs = {
         "need_type": ActorWriterOutput(
-            body="Чтобы не гадать с вариантом, сначала уточню цель.",
             followup_question="Что сейчас главное: закрыть долги или карты, снизить ежемесячный платеж, получить сумму на руки или другое?",
         ),
         "property_type": ActorWriterOutput(
-            body="По жилью сразу обещать условия нельзя - сначала смотрим сам объект и ограничения.",
             followup_question="Это квартира, дом или другой объект?",
         ),
         "property_owner_or_ownership": ActorWriterOutput(
-            body="По недвижимости важно понять, кто может участвовать в оформлении.",
             followup_question="На кого оформлена недвижимость и готов ли собственник участвовать?",
         ),
         "property_encumbrance_basic": ActorWriterOutput(
-            body="Осталось понять ограничения по объекту.",
             followup_question="Есть ли по недвижимости ипотека, залог, арест или другие обременения?",
         ),
         "car_brand_model": ActorWriterOutput(
-            body="По авто сначала смотрим саму машину, без обещаний заранее.",
             followup_question="Какая у вас машина: марка и модель?",
         ),
         "car_year": ActorWriterOutput(
-            body="Марку понял. Теперь важен год выпуска.",
             followup_question="Какого года автомобиль?",
         ),
         "car_owner": ActorWriterOutput(
-            body="Хорошо. Дальше важно право собственности.",
             followup_question="На кого оформлен автомобиль?",
         ),
         "car_pledge_or_restrictions": ActorWriterOutput(
-            body="Понял. Осталось проверить ограничения по машине.",
             followup_question="Автомобиль сейчас в залоге, кредите, аресте или с ограничениями?",
         ),
         "income_status": ActorWriterOutput(
-            body="Понял. По платежу уже видно, насколько это давит на бюджет.",
-            followup_question="Какой у вас сейчас доход в месяц и он официальный?",
+            followup_question="Какой у вас доход в месяц и он официальный?",
         ),
         "delinquency_context": ActorWriterOutput(
-            body="Осталось понять, есть ли уже давление по просрочкам.",
-            followup_question="Просрочки уже есть или пока платите без задержек?",
+            followup_question="Есть просрочки или пока платите без задержек?",
         ),
         "desired_amount_or_total_debt": ActorWriterOutput(
-            body="Чтобы не смешивать нужную сумму и долговую нагрузку, уточню размер.",
             followup_question="Какая сумма нужна на руки или какой общий долг нужно разобрать?",
         ),
         "total_debt": ActorWriterOutput(
-            body="Понял, основная задача - закрыть долги и не добирать лишнего вслепую.",
-            followup_question="Сколько сейчас всего задолженности по картам и кредитам?",
+            followup_question="Какая сейчас общая сумма долгов по кредитам и картам?",
         ),
         "monthly_payments": ActorWriterOutput(
-            body="Зафиксировал сумму. Теперь нужно понять нагрузку.",
-            followup_question="Сколько сейчас уходит в месяц на платежи?",
+            followup_question="Сколько примерно уходит в месяц на платежи?",
         ),
         "comfortable_payment": ActorWriterOutput(
-            body="Теперь нужно понять, какой платеж будет посильным.",
-            followup_question="Какой ежемесячный платеж был бы для вас комфортным?",
+            followup_question="Какой ежемесячный платеж был бы комфортным?",
         ),
         "loan_types": ActorWriterOutput(
-            body="Чтобы не предлагать новый долг вслепую, уточню состав задолженности.",
-            followup_question="Какие долги есть: банки, карты, МФО, займы или другое?",
+            followup_question="Какие долги есть: карты, кредиты, МФО или займы?",
+        ),
+        "collateral_preference": ActorWriterOutput(
+            body="По нагрузке новый обычный кредит может быть не первым вариантом.",
+            followup_question="Авто или недвижимость как вариант для проверки условий готовы рассматривать или точно нет?",
+        ),
+        "bfl_property_context": ActorWriterOutput(
+            followup_question="Какая недвижимость есть: тип, город, на ком оформлена, единственное ли жилье и есть ли обременения?",
+        ),
+        "bfl_dependents_context": ActorWriterOutput(
+            followup_question="Кто у вас на иждивении и сколько человек?",
+        ),
+        "bfl_vehicle_context": ActorWriterOutput(
+            followup_question="Какая машина и какого года?",
+        ),
+        "previous_debt_procedure": ActorWriterOutput(
+            followup_question="Раньше были банкротство или реструктуризация долгов?",
         ),
         "urgency": ActorWriterOutput(
-            body="Понял задачу. Еще важен срок.",
             followup_question="Насколько срочно нужна сумма?",
         ),
     }
@@ -152,9 +155,9 @@ def deterministic_output_for_slot(slot: str) -> ActorWriterOutput:
 
 def _concern_body(concern: str | None) -> str:
     if concern == "property_risk":
-        return "Понимаю страх за жилье. Риск нельзя обнулить словами; сначала уточним базовые параметры."
+        return "Понимаю страх за жилье. Проверим только базовые параметры."
     if concern == "vehicle_retention":
-        return "Понял, машина нужна вам для жизни или работы. Это не означает, что ее нужно отдавать."
+        return "Понял, машину забирать не хочется - это учтем."
     if concern == "bankruptcy_fear":
         return "Понимаю, что банкротство может пугать. Сейчас смотрим на законный и посильный вариант."
     if concern in {"credit_bureau_objection", "mfo_rating_concern", "challenges_credit_bureau_claim"}:
@@ -164,7 +167,34 @@ def _concern_body(concern: str | None) -> str:
     return "Понял вашу позицию. Уточню один факт, чтобы двигаться аккуратно."
 
 
+def recommendation_offer_output(move: ActorMove) -> ActorWriterOutput:
+    """Render a pending terminal recommendation without emitting an action."""
+
+    summary = move.recommendation_summary
+    product = move.recommended_product or "следующий шаг"
+    prefix = ""
+    if move.direct_answer_topic == "bankruptcy_clarification" and move.action_scope == "bfl_handoff":
+        prefix = (
+            "Не обязательно банкротство. При стабильном доходе сначала проверяют посильный график "
+            "или реструктуризацию; банкротство смотрят отдельно. Имущество нужно отдельно проверить. "
+        )
+    if summary:
+        clean_summary = summary.rstrip(".")
+        body = (
+            f"{prefix}{clean_summary}. "
+            f"Самый логичный следующий шаг - проверить {product}. Условия заранее не обещаю."
+        )
+    else:
+        body = f"{prefix}По вводным картина понятна. Самый логичный следующий шаг - проверить {product}. Условия заранее не обещаю."
+    return ActorWriterOutput(
+        body=body,
+        followup_question=move.confirmation_question or "Передать вас специалисту, чтобы он проверил детали?",
+    )
+
+
 def _post_terminal_body(move: ActorMove) -> str:
+    if move.direct_answer_topic == "route_declined":
+        return "Понял, этот вариант не рассматриваем. Тогда смотрим следующий подходящий формат по вашим вводным."
     if move.action_scope == "bfl_handoff":
         if move.direct_answer_topic == "bankruptcy_clarification":
             return (
@@ -175,5 +205,10 @@ def _post_terminal_body(move: ActorMove) -> str:
         return (
             "Дальше идет долговой разбор: специалист по долгам проверит нагрузку, "
             "платежи и риски. Те же вопросы заново проходить не нужно."
+        )
+    if move.action_scope == "handoff_expert":
+        return (
+            "Дальше с вами работает профильный специалист: он посмотрит сумму, "
+            "объект или авто, документы и ограничения. Те же вопросы заново проходить не нужно."
         )
     return "Дальше уже идет выбранный разбор. Те же вопросы заново проходить не нужно."

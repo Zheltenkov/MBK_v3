@@ -99,6 +99,7 @@ def test_discovery_slots_are_dynamic_by_need_type() -> None:
         "income_status",
         "comfortable_payment",
         "delinquency_context",
+        "loan_types",
     ]
     assert repair_session.primary_slots == ["desired_amount_or_total_debt", "income_status", "urgency"]
 

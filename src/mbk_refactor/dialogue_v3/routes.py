@@ -38,10 +38,14 @@ def select_route(frame: CaseFrame, state: DialogueV3State) -> str:
     if _explicit_property_collateral_intent(frame) and not _mortgage_blocked(frame, state):
         return _mortgage_route(frame)
 
-    if _severe_debt_pressure(frame):
+    if BFL_RI not in state.rejected_routes and _severe_debt_pressure(frame):
         return BFL_RI
 
-    if _restructuring_debt_pressure(frame):
+    if (
+        BFL_RD not in state.rejected_routes
+        and _restructuring_debt_pressure(frame)
+        and not _collateral_preference_pending(frame, state)
+    ):
         return BFL_RD
 
     early_route = _early_funnel_route(frame, state)
@@ -54,10 +58,10 @@ def select_route(frame: CaseFrame, state: DialogueV3State) -> str:
     if _pts_possible(frame, state) and _has_non_form_vehicle_evidence(state):
         return PTS
 
-    if _unsecured_possible(frame):
+    if UNSECURED not in state.rejected_routes and _unsecured_possible(frame):
         return UNSECURED
 
-    if _micro_possible(frame):
+    if MICRO not in state.rejected_routes and _micro_possible(frame):
         return MICRO
 
     return OTHER
@@ -92,6 +96,8 @@ def _pts_possible(frame: CaseFrame, state: DialogueV3State) -> bool:
 def _early_funnel_route(frame: CaseFrame, state: DialogueV3State) -> str | None:
     """Keep early generic turns in a safe funnel instead of form-asset collateral intake."""
 
+    if _clean_debt_ready_for_unsecured(frame):
+        return None
     if state.turn_index > 3 and _previous_selected_route(state) != DISCOVERY:
         return None
     if _explicit_vehicle_intent(frame) or _explicit_property_collateral_intent(frame):
@@ -135,6 +141,66 @@ def _general_funnel_intent(frame: CaseFrame) -> bool:
     if frame.need_type in {"new_money", "debt_solution", "payment_reduction"}:
         return True
     return False
+
+
+def _clean_debt_ready_for_unsecured(frame: CaseFrame) -> bool:
+    """Let completed clean debt discovery exit to the existing unsecured path."""
+
+    debt_goal = frame.need_type in {"debt_solution", "payment_reduction"} or frame.early_need_signal in {
+        "debt_solution",
+        "payment_reduction",
+    }
+    if not debt_goal:
+        return False
+    if _collateral_available_or_requested(frame):
+        return False
+    if not _unsecured_possible(frame):
+        return False
+    return bool(
+        frame.total_debt is not None
+        and frame.monthly_payments is not None
+        and _income_known(frame)
+        and frame.loan_types_known
+    )
+
+
+def _collateral_available_or_requested(frame: CaseFrame) -> bool:
+    return bool(
+        frame.has_car is True
+        or frame.has_property is True
+        or frame.car_brand_model_known
+        or frame.car_year is not None
+        or frame.property_type
+        or frame.property_region
+        or frame.explicit_pts_intent
+        or frame.explicit_mortgage_intent
+    )
+
+
+def _collateral_preference_pending(frame: CaseFrame, state: DialogueV3State) -> bool:
+    """Keep realistic debt funnels from terminal debt handoff before collateral choice."""
+
+    if not _collateral_available_or_requested(frame):
+        return False
+    if frame.has_arrears or frame.has_mfo or frame.collector_pressure:
+        return False
+    if "collateral_preference" in state.asked_slots:
+        return False
+    if (
+        frame.explicit_pts_intent
+        or frame.explicit_mortgage_intent
+        or frame.vehicle_refuses_collateral
+        or frame.property_refuses_collateral
+    ):
+        return False
+    return frame.need_type in {"debt_solution", "payment_reduction"} or frame.early_need_signal in {
+        "debt_solution",
+        "payment_reduction",
+    }
+
+
+def _income_known(frame: CaseFrame) -> bool:
+    return frame.income_status != "unknown" or frame.official_income is not None or frame.other_income is not None
 
 
 def _fact_is_not_from_form(state: DialogueV3State, key: str) -> bool:
@@ -183,11 +249,23 @@ def _restructuring_debt_pressure(frame: CaseFrame) -> bool:
     debt_numbers_known = frame.total_debt is not None and frame.monthly_payments is not None
     income_known = frame.income_status != "unknown" or frame.official_income is not None or frame.other_income is not None
     payment_resolution_signal = frame.comfortable_payment is not None or frame.client_wants_to_pay
+    restructuring_pressure = (
+        frame.has_arrears
+        or frame.has_mfo
+        or frame.collector_pressure
+        or frame.high_payment_load
+        or frame.payment_gap_large
+        or frame.client_wants_to_pay
+        or frame.client_fears_bankruptcy
+        or frame.bankruptcy_clarification_question
+        or frame.client_open_to_legal_debt_solution
+    )
     return bool(
         debt_intent
         and debt_numbers_known
         and income_known
         and payment_resolution_signal
+        and restructuring_pressure
     )
 
 
@@ -195,7 +273,7 @@ def _unsecured_possible(frame: CaseFrame) -> bool:
     if frame.has_arrears or frame.collector_pressure or frame.has_mfo:
         return False
     return bool(
-        frame.desired_amount is not None
+        (frame.desired_amount is not None or frame.total_debt is not None)
         and frame.income_status in {"stable", "no_official_income", "unknown"}
     )
 

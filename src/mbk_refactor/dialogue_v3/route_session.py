@@ -44,7 +44,7 @@ def build_route_session(
     """Build the authoritative per-turn route session."""
 
     plan = get_intake_plan(selected_route)
-    primary_slots = primary_slots_for_route(selected_route, frame)
+    primary_slots = primary_slots_for_route(selected_route, frame, state=state)
     resolution = resolve_primary_slots(primary_slots, state=state, frame=frame)
     blockers = _collect_blockers(selected_route, frame)
 

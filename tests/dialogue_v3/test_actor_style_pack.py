@@ -42,7 +42,11 @@ def test_prompt_allows_manager_like_ask_slot_body() -> None:
     assert "ты не анкета" in lowered
     assert "body нужен, если без него ответ звучит как сухая форма" in lowered
     assert "ask_slot" in lowered
-    assert "body: 1-3 коротких предложения" in lowered
+    assert "body: 0-12 слов" in lowered
+    assert "чаще всего body должен быть пустым" in lowered
+    assert "не продавай каждый слот заново" in lowered
+    assert "чтобы не гадать" in lowered
+    assert "без этой цифры" in lowered
     assert "followup_question: ровно один вопрос по next_slot" in lowered
 
 
@@ -212,8 +216,8 @@ def test_pts_retention_does_not_become_pts_refusal() -> None:
     )
     output = ActorWriter(mode="deterministic").write(move=move)
 
-    assert "не значит" in output.body.lower()
-    assert "отпадает" in output.body.lower()
+    assert "машину забирать не хочется" in output.body.lower()
+    assert "учтем" in output.body.lower()
     assert "без залога" not in output.body.lower()
     assert "доход" not in output.followup_question.lower()
     assert "машина" in output.followup_question.lower()
@@ -266,7 +270,7 @@ def test_llm_guarded_repair_keeps_route_and_uses_text_only_retry() -> None:
     result = DialogueV3Engine(
         writer_mode="llm_guarded",
         actor_writer=ActorWriter(mode="llm_guarded", llm_client=fake_client),
-    ).handle_turn("Нужны деньги, авто есть")
+    ).handle_turn("Можно рассмотреть под ПТС")
 
     assert result.route_session.selected_route == "PTS"
     assert result.actor_move.selected_route == "PTS"
@@ -287,10 +291,31 @@ def test_llm_guarded_falls_back_if_repair_is_still_invalid() -> None:
     result = DialogueV3Engine(
         writer_mode="llm_guarded",
         actor_writer=ActorWriter(mode="llm_guarded", llm_client=bad_client),
-    ).handle_turn("Нужны деньги, авто есть")
+    ).handle_turn("Можно рассмотреть под ПТС")
 
     assert result.route_session.selected_route == "PTS"
     assert result.writer_invalid is True
     assert result.repair_attempted is True
     assert result.fallback_used is True
     assert "route" not in result.text.lower()
+
+
+def test_llm_guarded_falls_back_when_writer_asks_wrong_vehicle_slot() -> None:
+    def wrong_slot_client(messages: list[dict[str, str]]) -> str:
+        return json.dumps(
+            {"body": "", "followup_question": "Какого года автомобиль?"},
+            ensure_ascii=False,
+        )
+
+    result = DialogueV3Engine(
+        writer_mode="llm_guarded",
+        actor_writer=ActorWriter(mode="llm_guarded", llm_client=wrong_slot_client),
+    ).handle_turn("Можно рассмотреть под ПТС")
+
+    assert result.route_session.selected_route == "PTS"
+    assert result.actor_move.question_goal == "car_brand_model"
+    assert result.writer_invalid is True
+    assert result.repair_attempted is True
+    assert result.fallback_used is True
+    assert "марка" in result.text.lower()
+    assert "модель" in result.text.lower()

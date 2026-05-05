@@ -19,6 +19,7 @@ from .safe_fallback import (
     ActorWriterOutput,
     deterministic_output_for_slot,
     deterministic_question_for_slot,
+    recommendation_offer_output,
 )
 from .state import DialogueV3State
 
@@ -159,6 +160,9 @@ class ActorWriter:
         if move.move_type == "post_terminal_answer":
             return ActorWriterOutput(body=_post_terminal_body(move))
 
+        if move.move_type == "recommendation_offer":
+            return recommendation_offer_output(move)
+
         if move.move_type == "terminal_action":
             return ActorWriterOutput(body=_terminal_body(move))
 
@@ -211,6 +215,7 @@ SLOT_WORDING_HINTS = {
     "income_status": "Спросить доход в месяц и официальный ли он.",
     "comfortable_payment": "Спросить посильный ежемесячный платеж.",
     "delinquency_context": "Спросить, есть ли просрочки и сколько они длятся.",
+    "collateral_preference": "Спросить, можно ли рассматривать авто или недвижимость как возможный вариант без выбора маршрута.",
     "property_type": "Спросить, что за объект: квартира, дом или другое.",
     "property_region": "Спросить регион или город объекта.",
     "property_encumbrance_basic": "Спросить ипотеку, залог, аресты или ограничения.",
@@ -218,6 +223,10 @@ SLOT_WORDING_HINTS = {
     "car_year": "Спросить год выпуска машины.",
     "car_owner": "Спросить, на кого оформлена машина.",
     "car_pledge_or_restrictions": "Спросить залог, автокредит, аресты или ограничения по машине.",
+    "bfl_property_context": "Спросить краткий имущественный контекст для долгового разбора: тип/город/собственник/единственное жилье/обременения.",
+    "bfl_dependents_context": "Спросить, кто и сколько человек на иждивении.",
+    "bfl_vehicle_context": "Спросить марку/модель и год авто как имущественный фактор, не как ПТС-маршрут.",
+    "previous_debt_procedure": "Спросить, были ли раньше банкротство или реструктуризация долгов.",
 }
 
 
@@ -240,7 +249,12 @@ def _build_writer_context(
         "move_type": move.move_type,
         "next_slot": move.next_slot,
         "terminal_action": move.terminal_action,
+        "pending_terminal_action": move.pending_terminal_action,
+        "pending_route": move.pending_route,
         "action_scope": move.action_scope,
+        "recommended_product": move.recommended_product,
+        "recommendation_summary": move.recommendation_summary,
+        "confirmation_question": move.confirmation_question,
         "terminal_action_already_emitted": _terminal_action_already_emitted(
             move,
             emitted_terminal_actions,
@@ -295,7 +309,7 @@ def _offtopic_redirect(
     text = (state_summary.last_user_text if state_summary else "").lower()
     prefix = _client_name_prefix(move=move, state_summary=state_summary)
     if "python" in text or "код" in text:
-        return f"{prefix}Python - это точно не ко мне. Я здесь по кредитам, долгам и вариантам снижения нагрузки."
+        return f"{prefix}Python и код здесь не разбираю. Вернемся к кредитам, долгам и платежной нагрузке."
     if "english" in text:
         return f"{prefix}English здесь не нужен. Разбираем российские долги, рубли и платежи. Давайте по делу."
     if "бот" in text or "робот" in text or "ии" in text:
@@ -305,9 +319,9 @@ def _offtopic_redirect(
 
 def _objection_answer(client_concern: str | None) -> str:
     if client_concern == "vehicle_retention":
-        return "Это нормальное условие. То, что машина нужна каждый день, не значит, что авто-вариант сразу отпадает. Сначала проверяем формат пользования до оформления."
+        return "Понял, машину забирать не хочется - это учтем."
     if client_concern == "property_risk":
-        return "Риск здесь нельзя обнулить словами. Сначала нужно понять, есть ли смысл смотреть залоговый вариант до оформления."
+        return "Понимаю страх за жилье. Проверим только базовые параметры."
     if client_concern == "bankruptcy_fear":
         return "Если банкротство пугает, это нормально. Сейчас смотрим не обещания, а законный и посильный вариант."
     if client_concern in {"challenges_credit_bureau_claim", "credit_bureau_objection", "mfo_rating_concern"}:
@@ -321,6 +335,8 @@ def _objection_answer(client_concern: str | None) -> str:
 
 
 def _terminal_body(move: ActorMove) -> str:
+    if move.direct_answer_topic == "confirmed_terminal_consent":
+        return _confirmed_terminal_body(move)
     scope = move.action_scope or terminal_action_scope(move.terminal_action)
     if scope == "bfl_handoff":
         return _bfl_terminal_body(move)
@@ -335,6 +351,25 @@ def _terminal_body(move: ActorMove) -> str:
     if scope == "repeat_handoff":
         return "Это повторное обращение после перехода к специалисту. Анкету заново проходить не нужно - восстановим контакт и отметим, что ответа не было."
     return "Передам ситуацию специалисту для проверки без обещаний заранее."
+
+
+def _confirmed_terminal_body(move: ActorMove) -> str:
+    if move.action_scope == "bfl_handoff":
+        return "Хорошо, передаю специалисту по долгам. Он проверит нагрузку, платежи и возможные варианты без обещаний заранее."
+    if move.action_scope == "handoff_expert":
+        if move.selected_route in {PTS, AUTO_AUX}:
+            return "Хорошо, передаю специалисту. Он проверит машину, документы и формат без обещаний заранее."
+        if move.selected_route in {MORTGAGE_MAIN, MORTGAGE_AUX}:
+            return "Хорошо, передаю специалисту. Он проверит объект, документы и формат без обещаний заранее."
+        return "Хорошо, передаю специалисту. Он проверит детали без обещаний заранее."
+    return _terminal_body(ActorMove(
+        move_type="terminal_action",
+        selected_route=move.selected_route,
+        phase=move.phase,
+        terminal_action=move.terminal_action,
+        known_facts=move.known_facts,
+        action_scope=move.action_scope,
+    ))
 
 
 def _expert_handoff_body(move: ActorMove) -> str:
@@ -408,6 +443,8 @@ def _bfl_reason_parts(known_facts: dict[str, Any]) -> list[str]:
 
 
 def _post_terminal_body(move: ActorMove) -> str:
+    if move.direct_answer_topic == "route_declined":
+        return "Понял, этот вариант не рассматриваем. Тогда смотрим следующий подходящий формат по вашим вводным."
     if move.action_scope == "bfl_handoff":
         if move.direct_answer_topic == "bankruptcy_clarification":
             return (
@@ -421,6 +458,12 @@ def _post_terminal_body(move: ActorMove) -> str:
             "Дальше с вами работает специалист по долгам: он разберет нагрузку, "
             "платежи, доход и просрочку, а потом проверит реалистичный способ снизить "
             "платеж. Повторно проходить те же вопросы не нужно."
+        )
+    if move.action_scope == "handoff_expert":
+        return (
+            "Дальше с вами работает профильный специалист: он посмотрит сумму, "
+            "объект или авто, документы и ограничения. Повторно проходить те же "
+            "вопросы не нужно."
         )
     return "Дальше уже идет выбранный разбор. Повторно проходить те же вопросы не нужно."
 
