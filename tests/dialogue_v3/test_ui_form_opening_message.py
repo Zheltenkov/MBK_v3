@@ -29,6 +29,27 @@ def test_render_chat_no_longer_uses_system_instruction_after_form_submit() -> No
     assert "Анкета применена. Напишите первое сообщение клиента." not in source
 
 
+def test_auth_enabled_defaults_to_credentials_presence(monkeypatch) -> None:
+    monkeypatch.delenv("MBK_AUTH_ENABLED", raising=False)
+    monkeypatch.delenv("MBK_AUTH_USERNAME", raising=False)
+    monkeypatch.delenv("MBK_AUTH_PASSWORD", raising=False)
+
+    assert app_v3._auth_enabled() is False
+
+    monkeypatch.setenv("MBK_AUTH_USERNAME", "operator")
+    monkeypatch.setenv("MBK_AUTH_PASSWORD", "secret")
+
+    assert app_v3._auth_enabled() is True
+
+
+def test_auth_enabled_env_switch_can_disable_auth(monkeypatch) -> None:
+    monkeypatch.setenv("MBK_AUTH_ENABLED", "false")
+    monkeypatch.setenv("MBK_AUTH_USERNAME", "operator")
+    monkeypatch.setenv("MBK_AUTH_PASSWORD", "secret")
+
+    assert app_v3._auth_enabled() is False
+
+
 def test_opening_message_is_actor_like_and_top_level() -> None:
     state, _ = app_v3.start_chat_from_form(
         {

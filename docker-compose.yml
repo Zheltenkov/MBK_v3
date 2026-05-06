@@ -1,0 +1,11 @@
+services:
+  mbk-app:
+    build:
+      context: .
+    image: mbk-v3-app:latest
+    container_name: mbk-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"

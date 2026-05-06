@@ -78,6 +78,8 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
     _init_state()
+    if not _render_auth_gate():
+        return
 
     with st.sidebar:
         st.header("MBK v3")
@@ -116,6 +118,55 @@ def _init_state() -> None:
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
+    st.session_state.setdefault("auth_ok", False)
+    st.session_state.setdefault("auth_error", "")
+
+
+def _render_auth_gate() -> bool:
+    """Require a simple login/password before exposing the manual UI."""
+
+    if not _auth_enabled():
+        return True
+    if st.session_state.get("auth_ok") is True:
+        with st.sidebar:
+            if st.button("Выйти", use_container_width=True):
+                st.session_state["auth_ok"] = False
+                st.session_state["auth_error"] = ""
+                st.rerun()
+        return True
+
+    st.title("MBK dialogue_v3")
+    st.caption("Вход в панель ручной проверки.")
+    expected_username = os.getenv("MBK_AUTH_USERNAME", "")
+    expected_password = os.getenv("MBK_AUTH_PASSWORD", "")
+    if not expected_username or not expected_password:
+        st.error("Авторизация включена, но MBK_AUTH_USERNAME/MBK_AUTH_PASSWORD не заданы.")
+        return False
+
+    with st.form("mbk_auth_form", clear_on_submit=False):
+        username = st.text_input("Логин", key="auth_username_input")
+        password = st.text_input("Пароль", type="password", key="auth_password_input")
+        submitted = st.form_submit_button("Войти", type="primary", use_container_width=True)
+
+    if submitted:
+        if username == expected_username and password == expected_password:
+            st.session_state["auth_ok"] = True
+            st.session_state["auth_error"] = ""
+            st.rerun()
+        else:
+            st.session_state["auth_error"] = "Неверный логин или пароль."
+    if st.session_state.get("auth_error"):
+        st.error(st.session_state["auth_error"])
+    return False
+
+
+def _auth_enabled() -> bool:
+    """Read auth switch from env; default is enabled when credentials exist."""
+
+    raw_value = os.getenv("MBK_AUTH_ENABLED")
+    if raw_value is not None:
+        return raw_value.strip().lower() not in {"0", "false", "no", "off", "нет"}
+    return bool(os.getenv("MBK_AUTH_USERNAME") or os.getenv("MBK_AUTH_PASSWORD"))
 
 
 def _render_model_settings() -> None:
