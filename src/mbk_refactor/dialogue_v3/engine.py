@@ -32,6 +32,8 @@ class DialogueV3TurnResult:
     writer_output: ActorWriterOutput
     writer_validation: GuardValidation
     initial_writer_validation: GuardValidation
+    initial_writer_invalid: bool = False
+    final_writer_invalid: bool = False
     writer_invalid: bool = False
     repair_attempted: bool = False
     fallback_used: bool = False
@@ -174,21 +176,30 @@ class DialogueV3Engine:
             current_state.pending_terminal_action = actor_move.pending_terminal_action
 
         state_summary = build_compact_state_summary(current_state, extracted)
+        recent_assistant_texts = _recent_assistant_texts(current_state)
         writer_error: str | None = None
         try:
             writer_output = self.actor_writer.write(
                 move=actor_move,
                 state_summary=state_summary,
             )
-            writer_validation = self.response_guard.validate(output=writer_output, move=actor_move)
+            writer_validation = self.response_guard.validate(
+                output=writer_output,
+                move=actor_move,
+                recent_assistant_texts=recent_assistant_texts,
+            )
             initial_writer_validation = writer_validation
         except Exception as exc:
             writer_error = f"{type(exc).__name__}: {exc}"
             writer_output = render_safe_fallback(actor_move)
-            writer_validation = self.response_guard.validate(output=writer_output, move=actor_move)
+            writer_validation = self.response_guard.validate(
+                output=writer_output,
+                move=actor_move,
+                recent_assistant_texts=recent_assistant_texts,
+            )
             initial_writer_validation = _writer_exception_validation(writer_error)
 
-        writer_invalid = not initial_writer_validation.accepted
+        initial_writer_invalid = not initial_writer_validation.accepted
         repair_attempted = False
         fallback_used = writer_error is not None
         if not writer_validation.accepted:
@@ -201,16 +212,28 @@ class DialogueV3Engine:
                         output=writer_output,
                         validation=writer_validation,
                     )
-                    writer_validation = self.response_guard.validate(output=writer_output, move=actor_move)
+                    writer_validation = self.response_guard.validate(
+                        output=writer_output,
+                        move=actor_move,
+                        recent_assistant_texts=recent_assistant_texts,
+                    )
                 except Exception as exc:
                     writer_error = f"{type(exc).__name__}: {exc}"
                     writer_output = render_safe_fallback(actor_move)
                     fallback_used = True
-                    writer_validation = self.response_guard.validate(output=writer_output, move=actor_move)
+                    writer_validation = self.response_guard.validate(
+                        output=writer_output,
+                        move=actor_move,
+                        recent_assistant_texts=recent_assistant_texts,
+                    )
             if not writer_validation.accepted:
                 writer_output = render_safe_fallback(actor_move)
                 fallback_used = True
-                writer_validation = self.response_guard.validate(output=writer_output, move=actor_move)
+                writer_validation = self.response_guard.validate(
+                    output=writer_output,
+                    move=actor_move,
+                    recent_assistant_texts=recent_assistant_texts,
+                )
 
         if not writer_output.text.strip():
             raise ValueError("dialogue_v3 produced an empty assistant response")
@@ -226,10 +249,12 @@ class DialogueV3Engine:
             output=writer_output,
             move=actor_move,
             events=events,
+            recent_assistant_texts=recent_assistant_texts,
         )
         if not writer_validation.accepted:
             issue_codes = ", ".join(sorted(writer_validation.issue_codes))
             raise ValueError(f"dialogue_v3 response failed post-action guard: {issue_codes}")
+        final_writer_invalid = not writer_validation.accepted
 
         trace = build_turn_trace(
             turn_index=current_state.turn_index,
@@ -255,7 +280,9 @@ class DialogueV3Engine:
             writer_output=writer_output,
             writer_validation=writer_validation,
             initial_writer_validation=initial_writer_validation,
-            writer_invalid=writer_invalid,
+            initial_writer_invalid=initial_writer_invalid,
+            final_writer_invalid=final_writer_invalid,
+            writer_invalid=final_writer_invalid,
             repair_attempted=repair_attempted,
             fallback_used=fallback_used,
             writer_error=writer_error,
@@ -308,3 +335,13 @@ def _writer_exception_validation(writer_error: str) -> GuardValidation:
         ],
         repairable=False,
     )
+
+
+def _recent_assistant_texts(state: DialogueV3State, *, limit: int = 8) -> list[str]:
+    """Return recent visible assistant turns for style repetition validation."""
+
+    return [
+        message.content
+        for message in state.messages
+        if message.role == "assistant"
+    ][-limit:]

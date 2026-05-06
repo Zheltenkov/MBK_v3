@@ -117,7 +117,7 @@ def plan_actor_move(
             known_facts=build_grounding_known_facts(state),
         )
 
-    concern = _client_concern(frame)
+    concern = _client_concern(frame, state=state, next_slot=route_session.next_slot)
     if concern and route_session.next_slot:
         return ActorMove(
             move_type="handle_objection_then_ask",
@@ -169,12 +169,19 @@ def plan_actor_move(
                 selected_route=route_session.selected_route,
                 phase=route_session.phase,
                 direct_answer_topic=_terminal_offer_direct_topic(frame),
-                known_facts=build_terminal_known_facts(route_session.selected_route, state),
+                known_facts=_with_session_reasons(
+                    build_terminal_known_facts(route_session.selected_route, state),
+                    route_session,
+                ),
                 action_scope=terminal_action_scope(route_session.terminal_action),
                 pending_route=route_session.selected_route,
                 pending_terminal_action=route_session.terminal_action,
                 recommended_product=_recommended_product_label(route_session.selected_route),
-                recommendation_summary=_recommendation_summary(route_session.selected_route, state),
+                recommendation_summary=_recommendation_summary(
+                    route_session.selected_route,
+                    state,
+                    route_session,
+                ),
                 confirmation_question=_confirmation_question(route_session.terminal_action),
             )
         return ActorMove(
@@ -219,10 +226,15 @@ def _confirmation_question(terminal_action: str | None) -> str:
     return "Передать вас специалисту, чтобы он проверил детали?"
 
 
-def _recommendation_summary(route: str, state: DialogueV3State | None) -> str | None:
+def _recommendation_summary(
+    route: str,
+    state: DialogueV3State | None,
+    route_session: RouteSession | None = None,
+) -> str | None:
     facts = build_terminal_known_facts(route, state)
     if not facts:
         return None
+    risk_sentence = _route_check_sentence(route, route_session)
     if route in {PTS, AUTO_AUX}:
         vehicle_parts = _vehicle_summary_parts(facts)
         summary_parts: list[str] = []
@@ -231,6 +243,8 @@ def _recommendation_summary(route: str, state: DialogueV3State | None) -> str | 
         debt_parts = _debt_summary_parts(state)
         if debt_parts:
             summary_parts.append(f"По долгам - {', '.join(debt_parts)}")
+        if risk_sentence:
+            summary_parts.append(risk_sentence)
         return ". ".join(summary_parts) if summary_parts else None
     if route in {MORTGAGE_MAIN, MORTGAGE_AUX}:
         parts: list[str] = []
@@ -245,13 +259,18 @@ def _recommendation_summary(route: str, state: DialogueV3State | None) -> str | 
         encumbrance = _property_encumbrance_phrase(facts)
         if encumbrance:
             parts.append(encumbrance)
-        return f"По недвижимости картина понятна: {', '.join(parts)}" if parts else None
+        summary = f"По недвижимости картина понятна: {', '.join(parts)}" if parts else None
+        if summary and risk_sentence:
+            return f"{summary}. {risk_sentence}"
+        if risk_sentence:
+            return risk_sentence
+        return summary
     if route in {BFL_RD, BFL_RI}:
         parts = _debt_summary_parts(state)
         if not parts:
             return None
         risk_parts = _bfl_risk_summary_parts(state)
-        risk_sentence = f". Имущество и семейную нагрузку нужно отдельно проверить: {', '.join(risk_parts)}" if risk_parts else ""
+        risk_sentence = f". Имущество нужно отдельно проверить; семейную нагрузку тоже: {', '.join(risk_parts)}" if risk_parts else ""
         return (
             f"По долгам картина понятна: {', '.join(parts)}{risk_sentence}. "
             "Это не обещание списания или реструктуризации; специалист проверит применимость"
@@ -307,6 +326,55 @@ def _vehicle_restriction_phrase(facts: dict[str, Any]) -> str | None:
     if positive:
         parts.append(f"есть {_join_ru_list(positive)}")
     return ", ".join(parts) if parts else None
+
+
+def _route_check_sentence(route: str, route_session: RouteSession | None) -> str | None:
+    if route_session is None:
+        return None
+    codes = list(route_session.blockers) + list(route_session.warnings)
+    if not codes:
+        return None
+
+    labels = [
+        label
+        for code in codes
+        if (label := _route_check_label(route, code)) is not None
+    ]
+    if not labels:
+        return None
+
+    if route in {PTS, AUTO_AUX}:
+        return f"Нужно отдельно проверить по авто: {_join_ru_list(labels)}"
+    if route in {MORTGAGE_MAIN, MORTGAGE_AUX}:
+        return f"Нужно отдельно проверить по недвижимости: {_join_ru_list(labels)}"
+    return f"Нужно отдельно проверить: {_join_ru_list(labels)}"
+
+
+def _route_check_label(route: str, code: str) -> str | None:
+    pts_labels = {
+        "vehicle_no_car_red_flag": "наличие машины",
+        "car_old_year": "возраст автомобиля",
+        "third_party_car_owner": "участие собственника",
+        "car_loan_red_flag": "автокредит",
+        "car_pledge_red_flag": "залог",
+        "car_arrest_red_flag": "арест",
+        "car_restriction_red_flag": "ограничения",
+    }
+    mortgage_labels = {
+        "unsupported_property_region": "регион объекта",
+        "third_party_property_owner": "участие собственника",
+        "property_mortgage": "ипотеку",
+        "property_pledge_red_flag": "залог",
+        "property_arrest_red_flag": "арест или ограничения",
+        "municipal_housing_red_flag": "тип жилья",
+        "property_share_red_flag": "долю",
+        "property_room_red_flag": "комнату",
+    }
+    if route in {PTS, AUTO_AUX}:
+        return pts_labels.get(code)
+    if route in {MORTGAGE_MAIN, MORTGAGE_AUX}:
+        return mortgage_labels.get(code)
+    return None
 
 
 def _append_flag_phrase(
@@ -446,7 +514,7 @@ def _income_status_phrase(income_status: Any) -> str | None:
 def _format_month_count(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    return f"{value} мес."
+    return f"{value} мес"
 
 
 def _thousand_word(value: int) -> str:
@@ -465,10 +533,17 @@ def _join_ru_list(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " и " + items[-1]
 
 
-def _client_concern(frame: CaseFrame) -> str | None:
+def _client_concern(
+    frame: CaseFrame,
+    *,
+    state: DialogueV3State | None = None,
+    next_slot: str | None = None,
+) -> str | None:
     if frame.property_risk_concern:
         return "property_risk"
     if frame.vehicle_requires_retention or frame.vehicle_refuses_transfer:
+        if not _should_acknowledge_vehicle_retention(state=state, next_slot=next_slot):
+            return None
         return "vehicle_retention"
     if frame.client_fears_bankruptcy:
         return "bankruptcy_fear"
@@ -479,6 +554,20 @@ def _client_concern(frame: CaseFrame) -> str | None:
     if frame.credit_bureau_objection:
         return "credit_bureau_objection"
     return None
+
+
+def _should_acknowledge_vehicle_retention(
+    *,
+    state: DialogueV3State | None,
+    next_slot: str | None,
+) -> bool:
+    """Avoid repeating the same vehicle-retention acknowledgement on every car slot."""
+
+    if state is None:
+        return True
+    if next_slot in {"car_year", "car_owner", "car_pledge_or_restrictions"}:
+        return "car_brand_model" not in state.asked_slots
+    return True
 
 
 def terminal_action_scope(terminal_action: str | None) -> str | None:
@@ -563,6 +652,15 @@ def build_terminal_known_facts(
                 "third_party_property_owner": "third_party_property_owner",
                 "property_owner_red_flag": "property_owner_red_flag",
                 "property_encumbrance_red_flag": "property_encumbrance_red_flag",
+                "property_pledge_red_flag": "property_pledge_red_flag",
+                "property_arrest_red_flag": "property_arrest_red_flag",
+                "municipal_housing_red_flag": "municipal_housing_red_flag",
+                "property_share_red_flag": "property_share_red_flag",
+                "property_room_red_flag": "property_room_red_flag",
+                "property_municipal_housing": "property_municipal_housing",
+                "property_share": "property_share",
+                "property_arrest": "property_arrest",
+                "property_pledge": "property_pledge",
                 "property_object_red_flag": "property_object_red_flag",
             },
         )
@@ -660,6 +758,10 @@ def _with_session_reasons(facts: dict[str, Any], route_session: RouteSession) ->
     result = dict(facts)
     if route_session.blockers:
         result["blockers"] = list(route_session.blockers)
+    if route_session.warnings:
+        result["warnings"] = list(route_session.warnings)
+    if route_session.risk_factors:
+        result["risk_factors"] = list(route_session.risk_factors)
     if route_session.reason_codes:
         result["reason_codes"] = list(route_session.reason_codes)
     return result

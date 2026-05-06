@@ -42,7 +42,12 @@ from mbk_refactor.dialogue_v3.constants import (  # noqa: E402
     SELF_SERVE_LINKS_3,
 )
 from mbk_refactor.dialogue_v3.engine import DialogueV3Engine, DialogueV3TurnResult  # noqa: E402
-from mbk_refactor.dialogue_v3.llm_client import build_optional_llm_client  # noqa: E402
+from mbk_refactor.dialogue_v3.llm_client import (  # noqa: E402
+    LLMClientStatus,
+    build_optional_llm_client,
+    mark_llm_status_failed,
+    mark_llm_status_verified,
+)
 from mbk_refactor.dialogue_v3.response_guard import HANDOFF_LANGUAGE  # noqa: E402
 from mbk_refactor.dialogue_v3.state import DialogueV3State  # noqa: E402
 from mbk_refactor.dialogue_v3.ui_form_schema import public_form_to_facts  # noqa: E402
@@ -337,13 +342,19 @@ def main() -> int:
         llm_status,
         scenario_results,
     )
+    llm_status = _updated_llm_status_after_smoke(
+        llm_status,
+        llm_writer_verification,
+        scenario_results,
+    )
+    llm_client_payload = _to_plain(llm_status) if llm_status else _not_requested_llm_status(args.model_name)
 
     artifact_path = _write_artifact(
         payload={
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "writer_mode": args.writer_mode,
             "model_name": args.model_name,
-            "llm_client": _to_plain(llm_status) if llm_status else {"available": False, "reason": "not requested"},
+            "llm_client": llm_client_payload,
             **llm_writer_verification,
             "summary": summary,
             "scenarios": scenario_results,
@@ -353,7 +364,7 @@ def main() -> int:
     output = {
         "writer_mode": args.writer_mode,
         "model_name": args.model_name,
-        "llm_client": _to_plain(llm_status) if llm_status else {"available": False, "reason": "not requested"},
+        "llm_client": llm_client_payload,
         "artifact_path": str(artifact_path),
         **llm_writer_verification,
         **summary,
@@ -378,11 +389,24 @@ def _llm_writer_verification(
             "llm_writer_pass_verified": False,
             "llm_writer_pass_status": "not_requested",
         }
-    if llm_status is None or not getattr(llm_status, "available", False):
+    if llm_status is None:
         reason = getattr(llm_status, "reason", "llm client unavailable")
         return {
             "llm_writer_pass_verified": False,
             "llm_writer_pass_status": f"unavailable: {reason}",
+        }
+    if not getattr(llm_status, "configured", False):
+        return {
+            "llm_writer_pass_verified": False,
+            "llm_writer_pass_status": f"unavailable: {llm_status.reason}",
+        }
+    if (
+        not getattr(llm_status, "available", False)
+        and getattr(llm_status, "reason", "") != "openai_client_configured_unverified"
+    ):
+        return {
+            "llm_writer_pass_verified": False,
+            "llm_writer_pass_status": f"unavailable: {llm_status.reason}",
         }
 
     writer_error_count = 0
@@ -403,6 +427,35 @@ def _llm_writer_verification(
     return {
         "llm_writer_pass_verified": True,
         "llm_writer_pass_status": "verified",
+    }
+
+
+def _updated_llm_status_after_smoke(
+    llm_status: LLMClientStatus | None,
+    verification: dict[str, Any],
+    scenario_results: list[dict[str, Any]],
+) -> LLMClientStatus | None:
+    """Reflect actual smoke writer outcome in the exported LLM status."""
+
+    if llm_status is None:
+        return None
+    if verification.get("llm_writer_pass_verified"):
+        return mark_llm_status_verified(llm_status)
+    for scenario in scenario_results:
+        for turn in scenario.get("turns", []):
+            writer_error = turn.get("writer_error")
+            if writer_error:
+                return mark_llm_status_failed(llm_status, str(writer_error))
+    return llm_status
+
+
+def _not_requested_llm_status(model_name: str) -> dict[str, Any]:
+    return {
+        "configured": False,
+        "verified": False,
+        "available": False,
+        "reason": "not_requested",
+        "model_name": model_name,
     }
 
 
@@ -784,10 +837,16 @@ def _turn_result_to_payload(result: DialogueV3TurnResult, *, writer_mode: Writer
             {"code": issue.code, "message": issue.message}
             for issue in result.writer_validation.issues
         ],
+        "final_validation_problems": [
+            {"code": issue.code, "message": issue.message}
+            for issue in result.writer_validation.issues
+        ],
         "initial_validation_problems": [
             {"code": issue.code, "message": issue.message}
             for issue in result.initial_writer_validation.issues
         ],
+        "initial_writer_invalid": result.initial_writer_invalid,
+        "final_writer_invalid": result.final_writer_invalid,
         "writer_invalid": result.writer_invalid,
         "repair_attempted": result.repair_attempted,
         "fallback_used": result.fallback_used,

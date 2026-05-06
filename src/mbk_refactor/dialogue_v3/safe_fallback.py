@@ -26,7 +26,7 @@ def render_safe_fallback(move: ActorMove) -> ActorWriterOutput:
 
     if move.move_type == "handle_offtopic_then_ask" and move.next_slot:
         return ActorWriterOutput(
-            body="Давайте вернемся к вашей финансовой ситуации.",
+            body="Я здесь по кредитам и долгам.",
             followup_question=deterministic_question_for_slot(move.next_slot),
         )
 
@@ -38,7 +38,7 @@ def render_safe_fallback(move: ActorMove) -> ActorWriterOutput:
 
     if move.move_type == "answer_then_ask_slot" and move.next_slot:
         return ActorWriterOutput(
-            body="Понял вопрос. Сначала уточню один факт, чтобы не предлагать неподходящий вариант.",
+            body="Понял вопрос. Зафиксируем основу, потом отвечу предметно.",
             followup_question=deterministic_question_for_slot(move.next_slot),
         )
 
@@ -116,13 +116,13 @@ def deterministic_output_for_slot(slot: str) -> ActorWriterOutput:
             followup_question="Какая сумма нужна на руки или какой общий долг нужно разобрать?",
         ),
         "total_debt": ActorWriterOutput(
-            followup_question="Какая сейчас общая сумма долгов по кредитам и картам?",
+            followup_question="Какая сейчас общая сумма долгов?",
         ),
         "monthly_payments": ActorWriterOutput(
             followup_question="Сколько примерно уходит в месяц на платежи?",
         ),
         "comfortable_payment": ActorWriterOutput(
-            followup_question="Какой ежемесячный платеж был бы комфортным?",
+            followup_question="Какой платеж в месяц для вас был бы реально посильным?",
         ),
         "loan_types": ActorWriterOutput(
             followup_question="Какие долги есть: карты, кредиты, МФО или займы?",
@@ -132,7 +132,8 @@ def deterministic_output_for_slot(slot: str) -> ActorWriterOutput:
             followup_question="Авто или недвижимость как вариант для проверки условий готовы рассматривать или точно нет?",
         ),
         "bfl_property_context": ActorWriterOutput(
-            followup_question="Какая недвижимость есть: тип, город, на ком оформлена, единственное ли жилье и есть ли обременения?",
+            body="При просрочках имущество нужно смотреть отдельно.",
+            followup_question="Что за недвижимость: тип, город, собственник, единственное жилье, есть обременения?",
         ),
         "bfl_dependents_context": ActorWriterOutput(
             followup_question="Кто у вас на иждивении и сколько человек?",
@@ -155,9 +156,9 @@ def deterministic_output_for_slot(slot: str) -> ActorWriterOutput:
 
 def _concern_body(concern: str | None) -> str:
     if concern == "property_risk":
-        return "Понимаю страх за жилье. Проверим только базовые параметры."
+        return "И правильно, что осторожничаете. По жилью без документов не обещают."
     if concern == "vehicle_retention":
-        return "Понял, машину забирать не хочется - это учтем."
+        return "Понял, без изъятия машины - это условие учтем."
     if concern == "bankruptcy_fear":
         return "Понимаю, что банкротство может пугать. Сейчас смотрим на законный и посильный вариант."
     if concern in {"credit_bureau_objection", "mfo_rating_concern", "challenges_credit_bureau_claim"}:

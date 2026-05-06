@@ -55,6 +55,9 @@ def test_guard_rejects_forbidden_guarantees() -> None:
         "Имущество точно не затронут.",
         "Квартиру точно сохраните.",
         "Машину точно не затронут.",
+        "Долги точно спишут.",
+        "Реструктуризацию точно утвердят.",
+        "Одобрение гарантировано.",
     ],
 )
 def test_guard_rejects_bfl_asset_safety_guarantees(claim: str) -> None:
@@ -155,6 +158,7 @@ def test_guard_rejects_income_amount_invented_from_monthly_payment() -> None:
         ("property_type", "Это квартира, дом или другой объект?"),
         ("property_owner_or_ownership", "На кого оформлена недвижимость?"),
         ("property_encumbrance_basic", "Есть ли ипотека, залог, арест или другие обременения?"),
+        ("previous_debt_procedure", "Раньше были банкротство или реструктуризация долгов?"),
     ],
 )
 def test_guard_accepts_followup_question_matching_question_goal(slot: str, question: str) -> None:
@@ -188,6 +192,7 @@ def test_guard_accepts_followup_question_matching_question_goal(slot: str, quest
         "property_type",
         "property_owner_or_ownership",
         "property_encumbrance_basic",
+        "previous_debt_procedure",
     ],
 )
 def test_guard_rejects_followup_question_not_matching_question_goal(slot: str) -> None:
@@ -207,6 +212,48 @@ def test_guard_rejects_followup_question_not_matching_question_goal(slot: str) -
     else:
         assert not validation.accepted
         assert "question_goal_mismatch" in validation.issue_codes
+
+
+def test_guard_rejects_previous_debt_procedure_as_vehicle_fact() -> None:
+    move = ActorMove(
+        move_type="ask_slot",
+        selected_route="BFL_RD",
+        phase="COLLECTING_PRIMARY_GATES",
+        next_slot="previous_debt_procedure",
+        question_goal="previous_debt_procedure",
+        known_facts={"raw_car_name": "Volkswagen Polo", "car_year": 2016},
+    )
+    output = ActorWriterOutput(
+        body=(
+            "Отлично, авто уже понятно: Volkswagen Polo 2016 года. "
+            "Остался один уточняющий факт по машине."
+        ),
+        followup_question="Были у вас раньше банкротство или реструктуризация долгов?",
+    )
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert not validation.accepted
+    assert "previous_debt_procedure_linked_to_vehicle_fact" in validation.issue_codes
+
+
+def test_guard_allows_previous_debt_procedure_with_clear_transition() -> None:
+    move = ActorMove(
+        move_type="ask_slot",
+        selected_route="BFL_RD",
+        phase="COLLECTING_PRIMARY_GATES",
+        next_slot="previous_debt_procedure",
+        question_goal="previous_debt_procedure",
+        known_facts={"raw_car_name": "Volkswagen Polo", "car_year": 2016},
+    )
+    output = ActorWriterOutput(
+        body="По машине понятно. Остался юридический момент по прошлым процедурам.",
+        followup_question="Были у вас раньше банкротство или реструктуризация долгов?",
+    )
+
+    validation = ResponseGuard().validate(output=output, move=move)
+
+    assert validation.accepted
 
 
 def test_guard_allows_post_terminal_specialist_reference_without_new_action_language() -> None:

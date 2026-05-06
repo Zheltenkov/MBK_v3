@@ -87,7 +87,9 @@ def test_bfl_rd_terminal_explains_handoff_and_post_terminal_clarifications_do_no
     assert ninth.events == []
     assert "передать вас специалисту по долгам" in ninth_lowered
     assert "платеж" in ninth_lowered or "нагруз" in ninth_lowered
-    assert "не обещаю" in ninth_lowered
+    assert "имущество нужно отдельно проверить" in ninth_lowered
+    assert "условия заранее не обещаю" in ninth_lowered
+    assert "это не обещание списания или реструктуризации" in ninth_lowered
     assert ninth.text.count("?") == 1
 
     tenth = engine.handle_turn("Да, передавайте.", ninth.state)

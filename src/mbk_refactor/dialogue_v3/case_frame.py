@@ -48,6 +48,22 @@ class CaseFrame:
     vehicle_requires_retention: bool = False
     vehicle_refuses_transfer: bool = False
     vehicle_hard_blocker: bool = False
+    vehicle_no_car_red_flag: bool = False
+    car_old_year: bool = False
+    third_party_car_owner: bool = False
+    car_loan_red_flag: bool = False
+    car_pledge_red_flag: bool = False
+    car_arrest_red_flag: bool = False
+    car_restriction_red_flag: bool = False
+
+    unsupported_property_region: bool = False
+    third_party_property_owner: bool = False
+    property_mortgage: bool = False
+    property_pledge_red_flag: bool = False
+    property_arrest_red_flag: bool = False
+    municipal_housing_red_flag: bool = False
+    property_share_red_flag: bool = False
+    property_room_red_flag: bool = False
 
     has_current_loans: bool | None = None
     has_mfo: bool | None = None
@@ -126,6 +142,32 @@ def build_case_frame(state: DialogueV3State) -> CaseFrame:
     frame.vehicle_requires_retention = _bool_value(state, "vehicle_requires_retention")
     frame.vehicle_refuses_transfer = _bool_value(state, "vehicle_refuses_transfer")
     frame.vehicle_hard_blocker = _bool_value(state, "vehicle_hard_blocker")
+    frame.vehicle_no_car_red_flag = _bool_value(state, "vehicle_no_car_red_flag")
+    frame.car_old_year = _bool_value(state, "car_old_year") or _bool_value(state, "car_year_red_flag")
+    frame.third_party_car_owner = _bool_value(state, "third_party_car_owner")
+    frame.car_loan_red_flag = _bool_value(state, "car_loan_red_flag")
+    frame.car_pledge_red_flag = _bool_value(state, "car_pledge_red_flag")
+    frame.car_arrest_red_flag = _bool_value(state, "car_arrest_red_flag")
+    frame.car_restriction_red_flag = _bool_value(state, "car_restriction_red_flag")
+
+    frame.unsupported_property_region = _bool_value(state, "property_region_red_flag") or (
+        state.fact_value("property_region_supported") is False
+    )
+    frame.third_party_property_owner = _bool_value(state, "third_party_property_owner")
+    frame.property_mortgage = _bool_value(state, "property_mortgage")
+    frame.property_pledge_red_flag = _bool_value(state, "property_pledge_red_flag") or (
+        _str_value(state, "property_encumbrance_type") == "pledge"
+    )
+    frame.property_arrest_red_flag = _bool_value(state, "property_arrest_red_flag") or (
+        _str_value(state, "property_encumbrance_type") == "arrest_or_restriction"
+    )
+    frame.municipal_housing_red_flag = _bool_value(state, "municipal_housing_red_flag") or _bool_value(
+        state, "property_municipal_housing"
+    )
+    frame.property_share_red_flag = _bool_value(state, "property_share_red_flag") or _bool_value(
+        state, "property_share"
+    )
+    frame.property_room_red_flag = _bool_value(state, "property_room_red_flag")
 
     frame.has_current_loans = _bool_or_none(state, "has_current_loans")
     frame.has_mfo = _bool_or_none(state, "has_mfo")

@@ -48,13 +48,23 @@ def test_opening_message_is_actor_like_and_top_level() -> None:
     assert "заявку вижу" in lowered
     assert "645 467 ₽" in opening
     assert "есть текущие кредиты" in lowered
-    assert "указали авто" in lowered
-    assert "актив - недвижимость" in lowered
+    assert "указали авто и недвижимость" in lowered
+    assert "актив - недвижимость" not in lowered
+    assert "актив" not in lowered
     assert "\n\n" in opening
     assert "чтобы подобрать нормальный вариант" in lowered
     assert "закрыть/объединить долги" in lowered
     assert "снизить ежемесячный платёж" in lowered
     assert "получить сумму на руки" in lowered
     assert "это квартира, дом или другой объект" not in lowered
+    assert "тип объекта" not in lowered
+    assert "марка" not in lowered
+    assert "модель" not in lowered
+    assert "какая у вас машина" not in lowered
     assert "какого года" not in lowered
     assert "виды активных кредитов" not in lowered
+    assert state.route is None
+    assert state.pending_route is None
+    assert state.pending_terminal_action is None
+    assert state.asked_slots == []
+    assert state.trace_history == []

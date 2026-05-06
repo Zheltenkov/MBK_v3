@@ -142,6 +142,10 @@ def has_credit_card_loan_type_signal(text: str) -> bool:
 def _extract_month_count(text: str) -> float | None:
     if re.search(r"\bпар[ау]\b.{0,20}\bмесяц", text):
         return 2.0
+    if re.search(r"\b(?:два|две|двух)\b.{0,20}\bмесяц", text):
+        return 2.0
+    if re.search(r"\bодин\b.{0,20}\bмесяц", text):
+        return 1.0
     match = re.search(r"(\d+(?:[,.]\d+)?)\s*(месяц|месяца|месяцев)", text)
     if not match:
         if re.search(r"\bмесяц(?:а|ев)?\b", text):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from mbk_refactor.dialogue_v3.actor_writer import ActorWriter
-from mbk_refactor.dialogue_v3.constants import HANDOFF_EXPERT, SELF_SERVE_LINKS_3
+from mbk_refactor.dialogue_v3.constants import HANDOFF_EXPERT, MANUAL_REVIEW, SELF_SERVE_LINKS_3
 from mbk_refactor.dialogue_v3.engine import DialogueV3Engine
 from mbk_refactor.dialogue_v3.state import DialogueV3State
 
@@ -75,6 +75,22 @@ def test_engine_pts_retention_does_not_create_handoff_before_primary_slots() -> 
     assert second.route_session.terminal_action is None
     assert second.events == []
     assert_no_handoff_language(second.text)
+
+
+def test_engine_acknowledges_vehicle_retention_once_then_asks_plain_car_slots() -> None:
+    engine = DialogueV3Engine()
+    first = engine.handle_turn(
+        "Хочу под ПТС, но машину забрать нельзя, она нужна каждый день.",
+    )
+    second = engine.handle_turn("Kia Sportage.", first.state)
+
+    assert first.route_session.selected_route == "PTS"
+    assert first.route_session.next_slot == "car_brand_model"
+    assert "без изъятия машины" in first.text.lower()
+    assert second.route_session.next_slot == "car_year"
+    assert second.writer_output.body == ""
+    assert "изъят" not in second.text.lower()
+    assert "забирать" not in second.text.lower()
 
 
 def test_engine_non_terminal_response_has_no_handoff_language() -> None:
@@ -398,11 +414,51 @@ def test_engine_pts_red_flags_still_handoff_without_guarantee_language() -> None
 
     assert result.trace.selected_route == "PTS"
     assert result.route_session.terminal_action == HANDOFF_EXPERT
+    assert set(result.route_session.warnings) == {
+        "car_old_year",
+        "third_party_car_owner",
+        "car_pledge_red_flag",
+    }
+    assert result.route_session.blockers == []
     assert result.actor_move.known_facts["car_old_year"] is True
     assert result.actor_move.known_facts["third_party_car_owner"] is True
     assert result.actor_move.known_facts["car_pledge_red_flag"] is True
+    assert "отдельно проверить по авто" in result.text.lower()
     assert "проверит" in result.text.lower()
     assert "точно" not in result.text.lower()
+
+
+def test_engine_pts_arrest_red_flag_blocks_clean_handoff() -> None:
+    state = DialogueV3State(session_id="pts-arrest-red-flag")
+    state.turn_index = 1
+    state.merge_facts(
+        {
+            "explicit_pts_intent": True,
+            "early_need_signal": "explicit_pts",
+            "has_car": True,
+            "raw_car_name": "Kia Rio",
+            "car_year": 2019,
+            "car_owner": "client",
+            "car_in_pledge": False,
+            "car_arrest_or_restriction": True,
+            "car_arrest_red_flag": True,
+        }
+    )
+
+    result = DialogueV3Engine().handle_turn("Да", state)
+
+    assert result.trace.selected_route == "PTS"
+    assert result.route_session.phase == "BLOCKED"
+    assert result.route_session.blockers == ["car_arrest_red_flag"]
+    assert result.route_session.terminal_action is None
+    assert result.actor_move.move_type == "no_solution_manual_review"
+    assert result.actor_move.terminal_action == MANUAL_REVIEW
+    assert [event.action_id for event in result.events] == [MANUAL_REVIEW]
+    assert HANDOFF_EXPERT not in [event.action_id for event in result.events]
+    lowered = result.text.lower()
+    assert "ручной разбор" in lowered
+    assert "точно" not in lowered
+    assert "одобр" not in lowered
 
 
 def test_engine_mortgage_red_flags_still_handoff_without_guarantee_language() -> None:
@@ -429,10 +485,67 @@ def test_engine_mortgage_red_flags_still_handoff_without_guarantee_language() ->
 
     assert result.trace.selected_route == "MORTGAGE_MAIN"
     assert result.route_session.terminal_action == HANDOFF_EXPERT
+    assert set(result.route_session.warnings) == {
+        "third_party_property_owner",
+        "property_mortgage",
+    }
+    assert result.route_session.blockers == []
     assert result.actor_move.known_facts["third_party_property_owner"] is True
     assert result.actor_move.known_facts["property_encumbrance_red_flag"] is True
+    assert "отдельно проверить по недвижимости" in result.text.lower()
     assert "проверит" in result.text.lower()
     assert "точно" not in result.text.lower()
+
+
+def test_engine_explicit_mortgage_third_party_owner_is_warning_not_route_switch() -> None:
+    result = DialogueV3Engine().handle_turn(
+        "Хочу под залог квартиры, квартира на жене.",
+    )
+
+    assert result.trace.selected_route in {"MORTGAGE_MAIN", "MORTGAGE_AUX"}
+    assert result.trace.selected_route != "DISCOVERY"
+    assert result.route_session.warnings == ["third_party_property_owner"]
+    assert result.route_session.blockers == []
+    assert result.state.fact_value("third_party_property_owner") is True
+    assert result.route_session.next_slot == "property_encumbrance_basic"
+    assert result.route_session.terminal_action is None
+
+
+def test_engine_mortgage_arrest_red_flag_blocks_clean_handoff() -> None:
+    state = DialogueV3State(session_id="mortgage-arrest-red-flag")
+    state.turn_index = 1
+    state.merge_facts(
+        {
+            "explicit_mortgage_intent": True,
+            "early_need_signal": "explicit_mortgage",
+            "has_property": True,
+            "property_type": "apartment",
+            "property_region": "Москва",
+            "property_region_supported": True,
+            "property_owner": "client",
+            "property_owner_known": True,
+            "property_encumbrance": True,
+            "property_arrest": True,
+            "property_encumbrance_type": "arrest_or_restriction",
+            "property_encumbrance_red_flag": True,
+            "property_arrest_red_flag": True,
+        }
+    )
+
+    result = DialogueV3Engine().handle_turn("Да", state)
+
+    assert result.trace.selected_route == "MORTGAGE_MAIN"
+    assert result.route_session.phase == "BLOCKED"
+    assert result.route_session.blockers == ["property_arrest_red_flag"]
+    assert result.route_session.terminal_action is None
+    assert result.actor_move.move_type == "no_solution_manual_review"
+    assert result.actor_move.terminal_action == MANUAL_REVIEW
+    assert [event.action_id for event in result.events] == [MANUAL_REVIEW]
+    assert HANDOFF_EXPERT not in [event.action_id for event in result.events]
+    lowered = result.text.lower()
+    assert "ручной разбор" in lowered
+    assert "точно" not in lowered
+    assert "одобр" not in lowered
 
 
 def test_engine_terminal_bfl_handoff_has_scope_and_compact_known_facts() -> None:

@@ -175,6 +175,14 @@ def _extract_property_facts(
         text, PROPERTY_SELF_OWNER_PATTERNS + PROPERTY_THIRD_PARTY_OWNER_PATTERNS + ("собственник готов участвовать",)
     )
     property_owner_context = property_word_present or facts.get("has_property") is True or mortgage_slot_context
+    owner_value = _slot_local_property_owner(text) if property_owner_context else None
+    if owner_value is not None:
+        facts["property_owner_known"] = True
+        facts["property_owner"] = owner_value
+        facts["has_property"] = True
+        if owner_value == "third_party":
+            facts["third_party_property_owner"] = True
+            facts["property_owner_red_flag"] = True
     owner_known = bool(facts.get("property_owner_known")) or (
         owner_signal and property_owner_context
     )
@@ -349,9 +357,11 @@ def _mark_property_type_red_flags(text: str, facts: dict[str, Any]) -> None:
     ):
         facts["property_municipal_housing"] = True
         facts["property_object_red_flag"] = True
+        facts["municipal_housing_red_flag"] = True
     if property_type == "share" or re.search(r"\bдол[яи]\b", text):
         facts["property_share"] = True
         facts["property_object_red_flag"] = True
+        facts["property_share_red_flag"] = True
     if property_type == "room":
         facts["property_room_red_flag"] = True
         facts["property_object_red_flag"] = True
@@ -416,11 +426,13 @@ def _extract_property_encumbrance(
         facts["property_pledge"] = True
         facts["property_encumbrance_type"] = "pledge"
         facts["property_encumbrance_red_flag"] = True
+        facts["property_pledge_red_flag"] = True
     if arrest_positive:
         facts["property_encumbrance"] = True
         facts["property_arrest"] = True
         facts["property_encumbrance_type"] = "arrest_or_restriction"
         facts["property_encumbrance_red_flag"] = True
+        facts["property_arrest_red_flag"] = True
 
     has_negative_signal = clear_negative or mortgage_negative or pledge_negative or arrest_negative
     if has_negative_signal and not (mortgage_positive or pledge_positive or arrest_positive):
@@ -429,13 +441,17 @@ def _extract_property_encumbrance(
             facts["property_mortgage"] = False
             facts["property_pledge"] = False
             facts["property_arrest"] = False
+            facts["property_pledge_red_flag"] = False
+            facts["property_arrest_red_flag"] = False
         else:
             if mortgage_negative:
                 facts["property_mortgage"] = False
             if pledge_negative:
                 facts["property_pledge"] = False
+                facts["property_pledge_red_flag"] = False
             if arrest_negative:
                 facts["property_arrest"] = False
+                facts["property_arrest_red_flag"] = False
 
 
 def _has_mortgage_property_slot_context(state: DialogueV3State | None) -> bool:

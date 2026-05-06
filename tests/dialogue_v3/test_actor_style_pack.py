@@ -40,7 +40,7 @@ def test_prompt_allows_manager_like_ask_slot_body() -> None:
     lowered = SYSTEM_PROMPT.lower()
 
     assert "ты не анкета" in lowered
-    assert "body нужен, если без него ответ звучит как сухая форма" in lowered
+    assert "для обычного уточняющего вопроса body чаще пустой" in lowered
     assert "ask_slot" in lowered
     assert "body: 0-12 слов" in lowered
     assert "чаще всего body должен быть пустым" in lowered
@@ -111,7 +111,8 @@ def test_python_offtopic_is_not_executed() -> None:
         ),
     )
 
-    assert "python" in output.body.lower()
+    assert "с python не ко мне" in output.body.lower()
+    assert "кредитам и долгам" in output.body.lower()
     assert "def " not in output.text.lower()
     assert "return " not in output.text.lower()
     assert ResponseGuard().validate(
@@ -163,7 +164,7 @@ def test_switch_to_english_does_not_switch_product_logic() -> None:
         ),
     )
 
-    assert "рубли" in output.body.lower()
+    assert "рубл" in output.body.lower()
     assert "долг" in output.followup_question.lower() or "задолж" in output.followup_question.lower()
     assert ResponseGuard().validate(output=output, move=move).accepted
 
@@ -216,7 +217,7 @@ def test_pts_retention_does_not_become_pts_refusal() -> None:
     )
     output = ActorWriter(mode="deterministic").write(move=move)
 
-    assert "машину забирать не хочется" in output.body.lower()
+    assert "без изъятия машины" in output.body.lower()
     assert "учтем" in output.body.lower()
     assert "без залога" not in output.body.lower()
     assert "доход" not in output.followup_question.lower()
@@ -274,11 +275,49 @@ def test_llm_guarded_repair_keeps_route_and_uses_text_only_retry() -> None:
 
     assert result.route_session.selected_route == "PTS"
     assert result.actor_move.selected_route == "PTS"
-    assert result.writer_invalid is True
+    assert result.initial_writer_invalid is True
+    assert result.final_writer_invalid is False
+    assert result.writer_invalid is False
     assert result.repair_attempted is True
     assert result.fallback_used is False
+    assert result.writer_validation.accepted is True
+    assert result.initial_writer_validation.issues
     assert result.text == "Какая у вас машина?"
     assert len(calls) == 2
+
+
+def test_llm_guarded_debug_flags_split_initial_and_final_writer_invalid() -> None:
+    calls: list[list[dict[str, str]]] = []
+
+    def fake_client(messages: list[dict[str, str]]) -> str:
+        calls.append(messages)
+        if len(calls) == 1:
+            return json.dumps(
+                {
+                    "body": "Чтобы не гадать вслепую, уточню один факт.",
+                    "followup_question": "Какая у вас машина?",
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {"body": "", "followup_question": "Какая у вас машина?"},
+            ensure_ascii=False,
+        )
+
+    result = DialogueV3Engine(
+        writer_mode="llm_guarded",
+        actor_writer=ActorWriter(mode="llm_guarded", llm_client=fake_client),
+    ).handle_turn("Можно рассмотреть под ПТС")
+
+    assert result.initial_writer_invalid is True
+    assert result.final_writer_invalid is False
+    assert result.writer_invalid is False
+    assert result.repair_attempted is True
+    assert result.fallback_used is False
+    assert result.writer_validation.accepted is True
+    assert result.writer_validation.issues == []
+    assert result.initial_writer_validation.issues
+    assert "plain_ask_slot_canned_phrase" in result.initial_writer_validation.issue_codes
 
 
 def test_llm_guarded_falls_back_if_repair_is_still_invalid() -> None:
@@ -294,9 +333,12 @@ def test_llm_guarded_falls_back_if_repair_is_still_invalid() -> None:
     ).handle_turn("Можно рассмотреть под ПТС")
 
     assert result.route_session.selected_route == "PTS"
-    assert result.writer_invalid is True
+    assert result.initial_writer_invalid is True
+    assert result.final_writer_invalid is False
+    assert result.writer_invalid is False
     assert result.repair_attempted is True
     assert result.fallback_used is True
+    assert result.writer_validation.accepted is True
     assert "route" not in result.text.lower()
 
 
@@ -314,8 +356,11 @@ def test_llm_guarded_falls_back_when_writer_asks_wrong_vehicle_slot() -> None:
 
     assert result.route_session.selected_route == "PTS"
     assert result.actor_move.question_goal == "car_brand_model"
-    assert result.writer_invalid is True
+    assert result.initial_writer_invalid is True
+    assert result.final_writer_invalid is False
+    assert result.writer_invalid is False
     assert result.repair_attempted is True
     assert result.fallback_used is True
+    assert result.writer_validation.accepted is True
     assert "марка" in result.text.lower()
     assert "модель" in result.text.lower()

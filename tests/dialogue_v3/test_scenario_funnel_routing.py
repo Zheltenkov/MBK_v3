@@ -369,6 +369,9 @@ def test_bfl_rd_collects_asset_and_family_risk_context_before_handoff() -> None:
     assert ninth.route_session.selected_route == "BFL_RD"
     assert ninth.route_session.selected_route != "PTS"
     assert ninth.route_session.next_slot == "previous_debt_procedure"
+    assert "факт по машине" not in ninth.text.lower()
+    assert "банкротство" in ninth.text.lower()
+    assert "реструктуризац" in ninth.text.lower()
 
     tenth = engine.handle_turn("Раньше банкротства или реструктуризации не было.", ninth.state)
     assert tenth.state.fact_value("previous_debt_procedure") is False

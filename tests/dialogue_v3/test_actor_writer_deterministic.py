@@ -79,7 +79,7 @@ def test_deterministic_plain_debt_slots_are_short_direct_questions() -> None:
     )
 
     assert total_debt.body == ""
-    assert total_debt.followup_question == "Какая сейчас общая сумма долгов по кредитам и картам?"
+    assert total_debt.followup_question == "Какая сейчас общая сумма долгов?"
     assert "какой общий размер задолженности" not in total_debt.text.lower()
     assert monthly.body == ""
     assert monthly.followup_question == "Сколько примерно уходит в месяц на платежи?"
@@ -128,12 +128,19 @@ def test_deterministic_common_plain_ask_slots_do_not_add_canned_body() -> None:
         "property_encumbrance_basic",
     ]
     forbidden_phrases = (
+        "это важная опора",
+        "это полезная опора",
+        "теперь смотрим",
+        "нужно понять",
         "чтобы не гадать",
+        "чтобы не ошибиться",
+        "картина становится яснее",
+        "это важный фактор",
+        "давайте разбер",
         "важно понять",
         "без этой цифры",
         "сначала нужно",
         "по вашим данным",
-        "это полезная опора",
         "дальше смотрим не",
     )
 
@@ -171,6 +178,28 @@ def test_collateral_preference_keeps_short_bridge_body() -> None:
     assert ResponseGuard().validate(output=output, move=move).accepted
 
 
+def test_bfl_risk_context_questions_are_short_not_lecture_like() -> None:
+    writer = ActorWriter(mode="deterministic")
+    for slot in ("bfl_property_context", "bfl_dependents_context", "bfl_vehicle_context"):
+        move = ActorMove(
+            move_type="ask_slot",
+            selected_route="BFL_RD",
+            phase="COLLECTING_PRIMARY_GATES",
+            next_slot=slot,
+            question_goal=slot,
+        )
+        output = writer.write(move=move)
+        lowered = output.text.lower()
+
+        assert len(output.body.split()) <= 12
+        assert output.followup_question
+        assert output.text.count("?") == 1
+        assert "чтобы не гадать" not in lowered
+        assert "важно понять" not in lowered
+        assert "это важная опора" not in lowered
+        assert ResponseGuard().validate(output=output, move=move).accepted
+
+
 def test_guard_rejects_canned_justification_for_plain_ask_slot() -> None:
     move = ActorMove(
         move_type="ask_slot",
@@ -190,6 +219,31 @@ def test_guard_rejects_canned_justification_for_plain_ask_slot() -> None:
 
     assert not validation.accepted
     assert "plain_ask_slot_canned_phrase" in validation.issue_codes
+
+
+def test_guard_rejects_repeated_canned_phrase_across_dialogue() -> None:
+    move = ActorMove(
+        move_type="answer_then_ask_slot",
+        selected_route="DISCOVERY",
+        phase="COLLECTING_PRIMARY_GATES",
+        next_slot="monthly_payments",
+        question_goal="monthly_payments",
+    )
+    from mbk_refactor.dialogue_v3.safe_fallback import ActorWriterOutput
+
+    output = ActorWriterOutput(
+        body="Это важная опора для расчета.",
+        followup_question="Сколько примерно уходит в месяц на платежи?",
+    )
+
+    validation = ResponseGuard().validate(
+        output=output,
+        move=move,
+        recent_assistant_texts=["Это важная опора, поэтому уточню сумму долга."],
+    )
+
+    assert not validation.accepted
+    assert "repeated_canned_phrase" in validation.issue_codes
 
 
 def test_deterministic_followup_slots_cover_debt_and_car_flow() -> None:
@@ -235,7 +289,7 @@ def test_vehicle_retention_response_does_not_guarantee_car_retention() -> None:
     output = writer.write(move=move)
     validation = ResponseGuard().validate(output=output, move=move)
 
-    assert "машину забирать не хочется" in output.body.lower()
+    assert "без изъятия машины" in output.body.lower()
     assert "точно останется" not in output.text.lower()
     assert output.text.count("?") == 1
     assert validation.accepted
@@ -254,7 +308,7 @@ def test_property_fear_response_does_not_promise_no_risk() -> None:
     output = writer.write(move=move)
     validation = ResponseGuard().validate(output=output, move=move)
 
-    assert "страх за жилье" in output.body.lower()
+    assert "осторожничаете" in output.body.lower()
     assert "риска нет" not in output.text.lower()
     assert "без риска" not in output.text.lower()
     assert output.text.count("?") == 1
@@ -297,7 +351,7 @@ def test_deterministic_offtopic_does_not_use_example_name_without_known_name() -
         ),
     )
 
-    assert "python" in output.body.lower()
+    assert "с python не ко мне" in output.body.lower()
     assert "сергей" not in output.text.lower()
     assert "анна" not in output.text.lower()
     assert ResponseGuard().validate(output=output, move=move).accepted
@@ -323,7 +377,7 @@ def test_deterministic_offtopic_can_use_explicit_known_client_name() -> None:
     )
 
     assert output.body.startswith("Иван, ")
-    assert "python" in output.body.lower()
+    assert "с python не ко мне" in output.body.lower()
     assert ResponseGuard().validate(output=output, move=move).accepted
 
 
@@ -381,6 +435,9 @@ def test_recommendation_offer_summarizes_and_asks_consent_without_event_language
     assert "вариант под птс/авто" in output.body.lower()
     assert output.followup_question == "Передать вас специалисту, чтобы он проверил детали?"
     assert output.text.count("?") == 1
+    assert "условия заранее не обещаю" in output.body.lower()
+    assert "точно" not in output.text.lower()
+    assert "гарант" not in output.text.lower()
     assert ResponseGuard().validate(output=output, move=move).accepted
 
 

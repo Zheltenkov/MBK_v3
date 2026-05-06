@@ -1079,11 +1079,23 @@ def test_no_stable_income_and_arrears_months_do_not_create_income_amount() -> No
     assert "official_income" not in extracted.facts
 
 
-def test_couple_months_arrears_parses_as_two_months() -> None:
-    extracted = extract_turn("Да, просрочки уже есть, примерно пару месяцев.")
+@pytest.mark.parametrize(
+    ("text", "expected_months"),
+    [
+        ("Да, просрочки уже есть, примерно пару месяцев.", 2.0),
+        ("Просрочка два месяца.", 2.0),
+        ("Просрочки около двух месяцев.", 2.0),
+        ("Месяц просрочки.", 1.0),
+    ],
+)
+def test_arrears_duration_parser_handles_common_month_phrases(
+    text: str,
+    expected_months: float,
+) -> None:
+    extracted = extract_turn(text)
 
     assert extracted.facts["has_arrears"] is True
-    assert extracted.facts["arrears_months"] == 2.0
+    assert extracted.facts["arrears_months"] == expected_months
 
 
 def test_no_stable_income_extracts_even_when_last_slot_was_monthly_payment() -> None:

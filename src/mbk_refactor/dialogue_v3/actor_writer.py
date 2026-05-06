@@ -131,7 +131,7 @@ class ActorWriter:
 
         if move.move_type == "answer_then_ask_slot" and move.next_slot:
             return ActorWriterOutput(
-                body="Сначала уточню один факт, чтобы не предложить неподходящий вариант.",
+                body="Зафиксируем основу, потом отвечу предметно.",
                 followup_question=deterministic_question_for_slot(move.next_slot),
             )
 
@@ -226,7 +226,7 @@ SLOT_WORDING_HINTS = {
     "bfl_property_context": "Спросить краткий имущественный контекст для долгового разбора: тип/город/собственник/единственное жилье/обременения.",
     "bfl_dependents_context": "Спросить, кто и сколько человек на иждивении.",
     "bfl_vehicle_context": "Спросить марку/модель и год авто как имущественный фактор, не как ПТС-маршрут.",
-    "previous_debt_procedure": "Спросить, были ли раньше банкротство или реструктуризация долгов.",
+    "previous_debt_procedure": "Спросить, были ли раньше банкротство или реструктуризация долгов. Это юридический вопрос по прошлым процедурам, не дополнительный факт по машине.",
 }
 
 
@@ -309,9 +309,9 @@ def _offtopic_redirect(
     text = (state_summary.last_user_text if state_summary else "").lower()
     prefix = _client_name_prefix(move=move, state_summary=state_summary)
     if "python" in text or "код" in text:
-        return f"{prefix}Python и код здесь не разбираю. Вернемся к кредитам, долгам и платежной нагрузке."
+        return f"{prefix}С Python не ко мне. Я здесь по кредитам и долгам."
     if "english" in text:
-        return f"{prefix}English здесь не нужен. Разбираем российские долги, рубли и платежи. Давайте по делу."
+        return f"{prefix}На английский не переключаюсь. Здесь про кредиты, долги и рубли."
     if "бот" in text or "робот" in text or "ии" in text:
         return "Я здесь как специалист по кредитам и долгам: смотрю вашу ситуацию и веду к следующему рабочему шагу."
     return "Давайте вернемся к вашей финансовой ситуации."
@@ -319,9 +319,9 @@ def _offtopic_redirect(
 
 def _objection_answer(client_concern: str | None) -> str:
     if client_concern == "vehicle_retention":
-        return "Понял, машину забирать не хочется - это учтем."
+        return "Понял, без изъятия машины - это условие учтем."
     if client_concern == "property_risk":
-        return "Понимаю страх за жилье. Проверим только базовые параметры."
+        return "И правильно, что осторожничаете. По жилью без документов не обещают."
     if client_concern == "bankruptcy_fear":
         return "Если банкротство пугает, это нормально. Сейчас смотрим не обещания, а законный и посильный вариант."
     if client_concern in {"challenges_credit_bureau_claim", "credit_bureau_objection", "mfo_rating_concern"}:
@@ -413,7 +413,7 @@ def _bfl_reason_parts(known_facts: dict[str, Any]) -> list[str]:
     elif total_debt:
         parts.append(f"Долг около {total_debt}, поэтому новый кредит не стоит добирать вслепую.")
     elif monthly_payments:
-        parts.append(f"Текущий платеж примерно {monthly_payments}, сначала нужно разобрать нагрузку.")
+        parts.append(f"Текущий платеж примерно {monthly_payments}, разбираем нагрузку.")
     else:
         parts.append("Здесь уже важнее не добирать новый кредит, а разобрать долговую нагрузку.")
 
@@ -427,7 +427,7 @@ def _bfl_reason_parts(known_facts: dict[str, Any]) -> list[str]:
         if comfortable_payment:
             parts.append(f"Доход есть, комфортный платеж ниже - около {comfortable_payment}.")
         else:
-            parts.append("Доход есть, значит сначала смотрим посильный график.")
+            parts.append("Доход есть, смотрим посильный график.")
     elif comfortable_payment:
         parts.append(f"Комфортный платеж ниже текущего - около {comfortable_payment}.")
 

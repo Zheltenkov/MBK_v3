@@ -35,7 +35,12 @@ if str(SRC) not in sys.path:
 
 from mbk_refactor.dialogue_v3.actor_writer import ActorWriter
 from mbk_refactor.dialogue_v3.engine import DialogueV3Engine, DialogueV3TurnResult
-from mbk_refactor.dialogue_v3.llm_client import LLMClientStatus, build_optional_llm_client
+from mbk_refactor.dialogue_v3.llm_client import (
+    LLMClientStatus,
+    build_optional_llm_client,
+    mark_llm_status_failed,
+    mark_llm_status_verified,
+)
 from mbk_refactor.dialogue_v3.state import DialogueV3State
 from mbk_refactor.dialogue_v3.ui_form_schema import (
     ROOT_FORM_FIELDS,
@@ -118,14 +123,22 @@ def _render_model_settings() -> None:
 
     st.markdown("**LLM writer**")
     st.text_input("Название модели", key="model_name")
+    if st.button("Проверить LLM", use_container_width=True):
+        _, status = build_optional_llm_client(
+            str(st.session_state.get("model_name") or DEFAULT_MODEL_NAME).strip(),
+            verify=True,
+        )
+        st.session_state["last_llm_status"] = status
     status = st.session_state.get("last_llm_status")
     if isinstance(status, LLMClientStatus):
-        if status.available:
+        if status.available and status.verified:
             st.success(f"LLM подключен: {status.model_name}")
+        elif status.configured:
+            st.warning(f"LLM настроен, но не подтверждён: {status.reason}")
         else:
             st.warning(f"LLM недоступен: {status.reason}")
     else:
-        st.caption("LLM подключение проверится на следующем ходе.")
+        st.caption("LLM подключение проверяется кнопкой или успешным writer-вызовом.")
 
     if st.button("Сбросить диалог", use_container_width=True):
         _reset_dialog()
@@ -331,14 +344,18 @@ def _handle_user_turn() -> None:
     st.session_state["last_result"] = result
     if result.writer_error:
         st.session_state["last_error"] = result.writer_error
-        if isinstance(llm_status, LLMClientStatus) and llm_status.available:
-            st.session_state["last_llm_status"] = LLMClientStatus(
-                available=False,
-                reason=result.writer_error,
-                model_name=llm_status.model_name,
+        if isinstance(llm_status, LLMClientStatus) and llm_status.configured:
+            st.session_state["last_llm_status"] = mark_llm_status_failed(
+                llm_status,
+                result.writer_error,
             )
     else:
         st.session_state["last_error"] = ""
+        if (
+            isinstance(llm_status, LLMClientStatus)
+            and llm_status.reason == "openai_client_configured_unverified"
+        ):
+            st.session_state["last_llm_status"] = mark_llm_status_verified(llm_status)
     st.session_state["turn_records"].append(_turn_record(result))
     st.rerun()
 
@@ -397,6 +414,14 @@ def _build_engine() -> tuple[DialogueV3Engine, LLMClientStatus]:
 
     model_name = str(st.session_state.get("model_name") or DEFAULT_MODEL_NAME).strip()
     llm_client, status = build_optional_llm_client(model_name)
+    cached_status = st.session_state.get("last_llm_status")
+    if (
+        isinstance(cached_status, LLMClientStatus)
+        and cached_status.model_name == model_name
+        and cached_status.verified
+        and status.reason == "openai_client_configured_unverified"
+    ):
+        status = cached_status
     writer = ActorWriter(mode=WRITER_MODE, llm_client=llm_client)
     return DialogueV3Engine(writer_mode=WRITER_MODE, actor_writer=writer), status
 
@@ -508,11 +533,18 @@ def _opening_root_facts_summary(state: DialogueV3State) -> str:
         facts.append(f"нужна сумма {_format_rub_amount(amount)}")
     if state.fact_value("has_current_loans") is True:
         facts.append("есть текущие кредиты")
-    if state.fact_value("has_car") is True:
-        facts.append("указали авто")
+    has_car = state.fact_value("has_car") is True
     asset_type = state.fact_value("asset_type")
-    if isinstance(asset_type, str) and asset_type.strip():
-        facts.append(f"актив - {asset_type.strip().lower()}")
+    has_property = state.fact_value("has_property") is True or (
+        isinstance(asset_type, str)
+        and "недвиж" in asset_type.lower().replace("ё", "е")
+    )
+    if has_car and has_property:
+        facts.append("указали авто и недвижимость")
+    elif has_car:
+        facts.append("указали авто")
+    elif has_property:
+        facts.append("указали недвижимость")
     employment_type = state.fact_value("employment_type")
     if isinstance(employment_type, str) and employment_type.strip():
         facts.append(f"занятость - {employment_type.strip().lower()}")
@@ -678,6 +710,9 @@ def _turn_record(result: DialogueV3TurnResult) -> dict[str, Any]:
         "initial_validation_problems": [
             _to_plain(issue) for issue in result.initial_writer_validation.issues
         ],
+        "final_validation_problems": [_to_plain(issue) for issue in result.writer_validation.issues],
+        "initial_writer_invalid": result.initial_writer_invalid,
+        "final_writer_invalid": result.final_writer_invalid,
         "writer_invalid": result.writer_invalid,
         "repair_attempted": result.repair_attempted,
         "fallback_used": result.fallback_used,
@@ -696,6 +731,9 @@ def _debug_top_payload(result: DialogueV3TurnResult, trace: dict[str, Any]) -> d
         "initial_validation_problems": [
             _to_plain(issue) for issue in result.initial_writer_validation.issues
         ],
+        "final_validation_problems": [_to_plain(issue) for issue in result.writer_validation.issues],
+        "initial_writer_invalid": result.initial_writer_invalid,
+        "final_writer_invalid": result.final_writer_invalid,
         "fallback_used": result.fallback_used,
         "writer_invalid": result.writer_invalid,
         "writer_error": result.writer_error,

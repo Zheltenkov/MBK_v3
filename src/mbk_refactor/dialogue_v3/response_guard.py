@@ -58,6 +58,8 @@ FORBIDDEN_CLAIMS = [
     "гарантированно одобрят",
     "точно спишут",
     "долги точно спишут",
+    "реструктуризацию точно утвердят",
+    "одобрение гарантировано",
     "риска нет",
     "без риска",
     "машина точно останется",
@@ -107,6 +109,17 @@ PLAIN_ASK_SLOT_CANNED_PHRASES = [
     "дальше смотрим не",
 ]
 
+STYLE_CANNED_PHRASES = [
+    *PLAIN_ASK_SLOT_CANNED_PHRASES,
+    "это важная опора",
+    "теперь смотрим",
+    "нужно понять",
+    "чтобы не ошибиться",
+    "картина становится яснее",
+    "это важный фактор",
+    "давайте разбер",
+]
+
 TERMINAL_MOVE_TYPES = {
     "terminal_action",
     "security_action",
@@ -141,6 +154,7 @@ class ResponseGuard:
         output: ActorWriterOutput,
         move: ActorMove,
         events: list[ActionEvent] | None = None,
+        recent_assistant_texts: list[str] | None = None,
     ) -> GuardValidation:
         issues: list[GuardIssue] = []
         text = output.text.strip()
@@ -168,11 +182,27 @@ class ResponseGuard:
                 )
             )
 
+        if _previous_debt_procedure_linked_to_vehicle_fact(output, move):
+            issues.append(
+                GuardIssue(
+                    "previous_debt_procedure_linked_to_vehicle_fact",
+                    "previous debt procedure question must not be described as a vehicle fact",
+                )
+            )
+
         for phrase in _plain_ask_slot_canned_phrases(output, move):
             issues.append(
                 GuardIssue(
                     "plain_ask_slot_canned_phrase",
                     f"plain ask_slot contains canned justification: {phrase}",
+                )
+            )
+
+        for phrase in _repeated_canned_phrases(output, recent_assistant_texts):
+            issues.append(
+                GuardIssue(
+                    "repeated_canned_phrase",
+                    f"canned phrase repeated in dialogue: {phrase}",
                 )
             )
 
@@ -404,6 +434,24 @@ def _income_amount_invented_from_monthly_payment(
     return False
 
 
+def _previous_debt_procedure_linked_to_vehicle_fact(
+    output: ActorWriterOutput,
+    move: ActorMove,
+) -> bool:
+    """Reject LLM wording that treats previous procedures as another car fact."""
+
+    if (move.question_goal or move.next_slot) != "previous_debt_procedure":
+        return False
+    normalized_text = output.text.lower().replace("ё", "е")
+    bad_markers = (
+        "факт по машине",
+        "факт по авто",
+        "уточняющий факт по машине",
+        "уточняющий факт по авто",
+    )
+    return any(marker in normalized_text for marker in bad_markers)
+
+
 def _plain_ask_slot_canned_phrases(
     output: ActorWriterOutput,
     move: ActorMove,
@@ -414,6 +462,28 @@ def _plain_ask_slot_canned_phrases(
         return []
     lowered = output.text.lower().replace("ё", "е")
     return [phrase for phrase in PLAIN_ASK_SLOT_CANNED_PHRASES if phrase in lowered]
+
+
+def _repeated_canned_phrases(
+    output: ActorWriterOutput,
+    recent_assistant_texts: list[str] | None,
+) -> list[str]:
+    """Catch repeated GPT-like stock phrases across visible assistant turns."""
+
+    if not recent_assistant_texts:
+        return []
+    normalized_texts = [
+        text.lower().replace("ё", "е")
+        for text in [*recent_assistant_texts, output.text]
+        if text.strip()
+    ]
+    repeated: list[str] = []
+    for phrase in STYLE_CANNED_PHRASES:
+        normalized_phrase = phrase.lower().replace("ё", "е")
+        count = sum(text.count(normalized_phrase) for text in normalized_texts)
+        if count >= 2:
+            repeated.append(phrase)
+    return repeated
 
 
 def _parse_visible_amount(
