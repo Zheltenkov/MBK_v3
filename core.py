@@ -1,43 +1,43 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Iterator
 
-from config import load_config
-from llm_agent import run_assistant_agent
-from utils import apply_fact_updates, apply_status_updates, enforce_hard_policy
+import llm_agent
+from config import AppConfig, load_config
+from prompts import split_bubbles
+from utils import apply_fact_updates, apply_status_updates, guard_bubbles
 
 
 BUSINESS_RULES_SUMMARY = """
-МБК не выдаёт кредиты. Мы смотрим профиль и подсказываем, какой маршрут реально имеет смысл.
+МБК не выдаёт кредиты сам — мы смотрим профиль и ведём клиента к реальному решению.
 
-Приоритет:
-- Есть квартира/дом/коммерция → чаще всего смотрим залог недвижимости.
-- Есть машина → можно смотреть ПТС/залог авто.
-- Чистый профиль без сильной нагрузки → можно пробовать беззалог через партнёров.
-- Нет активов + просрочки/МФО → чаще нужны долговые варианты или честный отказ от новых заявок.
+Приоритет маршрутов:
+- Есть квартира/дом/коммерция → чаще всего залог недвижимости.
+- Есть машина → можно ПТС/залог авто.
+- Чистый профиль без сильной нагрузки → беззалог через партнёров.
+- Нет активов + просрочки/МФО → долговые варианты (банкротство) или честный отказ от новых заявок.
 
-Анкета уже часть диагностики. Сумму, наличие кредитов, активы, занятость, иждивенцев,
-город и семейное положение считай известными вводными, если они есть в current_facts.
+Анкета — часть диагностики: сумму, кредиты, активы, занятость, иждивенцев, город и семейное
+положение считай известными, если они уже есть в фактах, и не переспрашивай.
 
-Не собирай анкету до идеала. Если цель, масштаб проблемы, красный флаг и актив уже понятны,
-делай вывод или передавай на специалиста. Лучше живой triage, чем длинный опрос.
+Не собирай анкету до идеала. Если цель, масштаб проблемы, красный флаг и актив уже понятны —
+делай вывод или передавай специалисту. Лучше живой triage, чем длинный опрос. 5 вопросов —
+контрольная точка, не лимит: после неё либо вывод/передача, либо короткое объяснение, зачем ещё вопрос.
 
-5 вопросов — это контрольная точка, не жёсткий лимит. После неё нельзя спрашивать по инерции:
-либо вывод/передача, либо короткое объяснение, зачем нужен ещё один вопрос.
-
-Долги + чистое авто + документы на руках → можно передавать на разбор по авто и задолженности.
-Не переспрашивай ПТС/СТС, залог, кредит или ограничения, если клиент уже подтвердил чистоту машины.
+Долги + чистое авто + документы на руках → можно передавать на разбор по авто и задолженности;
+не переспрашивай ПТС/залог/ограничения, если клиент уже подтвердил, что машина чистая.
 
 По недвижимости важны: город, ипотека/обременения, собственники, доли, несовершеннолетние собственники.
-Дети, которые только прописаны, не равны несовершеннолетним собственникам, но документы всё равно нужно смотреть аккуратно.
+Прописанные дети ≠ несовершеннолетние собственники, но документы всё равно смотреть аккуратно.
 
-Не обещай одобрение, ставку, точное списание или выдачу денег. Говори: "можно посмотреть", "реалистично", "имеет смысл".
+Не обещай гарантий (одобрение, ставку, списание, выдачу денег). При этом говори конкретно и по делу,
+без мямленья — опирайся на свою экспертизу по продуктам.
 """.strip()
 
 
 def build_runtime_payload(state: Dict, latest_user_message: str) -> Dict:
-    """Максимально чистый payload для одного хода."""
+    """Чистый payload для одного хода (история БЕЗ текущей реплики клиента)."""
     return {
         "current_facts": state.get("current_facts", {}),
         "fact_statuses": state.get("fact_statuses", {}),
@@ -47,63 +47,97 @@ def build_runtime_payload(state: Dict, latest_user_message: str) -> Dict:
     }
 
 
-def apply_updates(state: Dict, result: Dict, user_message: str) -> Dict:
+def apply_updates(state: Dict, state_update: Dict, user_message: str, bubbles: list[str]) -> Dict:
     new_state = deepcopy(state)
     new_state["current_facts"] = apply_fact_updates(
-        state.get("current_facts", {}),
-        result.get("fact_updates", []),
+        state.get("current_facts", {}), state_update.get("fact_updates", [])
     )
     new_state["fact_statuses"] = apply_status_updates(
-        state.get("fact_statuses", {}),
-        result.get("status_updates", []),
+        state.get("fact_statuses", {}), state_update.get("status_updates", [])
     )
 
-    if product_fit := result.get("product_fit_result"):
+    if product_fit := state_update.get("product_fit_result"):
         new_state["product_fit_result"] = product_fit
         if rec := product_fit.get("recommended_product_id"):
             new_state["selected_product_id"] = rec
-
-    if target_completion := result.get("target_completion"):
+    if target_completion := state_update.get("target_completion"):
         new_state["target_completion"] = target_completion
-
-    if phase := result.get("dialog_phase"):
+    if phase := state_update.get("dialog_phase"):
         new_state["dialog_phase"] = phase
 
     history = new_state.setdefault("chat_history", [])
     history.append({"role": "user", "content": user_message})
-    for bubble in result.get("messages", []):
+    for bubble in bubbles:
         history.append({"role": "assistant", "content": bubble})
     new_state["message_count"] = state.get("message_count", 0) + 1
     return new_state
 
 
-def process_message(state: Dict, user_message: str) -> Tuple[list[str], Dict, Dict]:
+# --------------------------------------------------------------------------- #
+# Стриминговый путь (для UI «как GPT»)
+# --------------------------------------------------------------------------- #
+def stream_reply(state: Dict, user_message: str, config: AppConfig | None = None) -> Iterator[str]:
+    """Живой ответ токен за токеном. Возвращает чанки текста для st.write_stream."""
+    config = config or load_config()
     payload = build_runtime_payload(state, user_message)
-    result = run_assistant_agent(payload, load_config())
-    result = enforce_hard_policy(result)
-    new_state = apply_updates(state, result, user_message)
-    return result.get("messages", []), new_state, result
+    yield from llm_agent.stream_conversation(payload, config)
 
 
+def commit_turn(state: Dict, user_message: str, full_reply: str, config: AppConfig | None = None) -> Dict:
+    """После стрима: разбор в JSON (молча) + применение фактов. Разговор от него не зависит."""
+    config = config or load_config()
+    payload = build_runtime_payload(state, user_message)
+
+    bubbles = guard_bubbles(split_bubbles(full_reply)) or [full_reply.strip() or "…"]
+
+    try:
+        state_update = llm_agent.extract_state(payload, full_reply, config)
+    except Exception:
+        # Извлечение может сбоить (модель/JSON) — это НЕ должно ломать диалог.
+        state_update = {"dialog_phase": state.get("dialog_phase", "qualification")}
+
+    new_state = apply_updates(state, state_update, user_message, bubbles)
+    new_state = _sync_legacy_debug_fields(new_state)
+    return _build_result(bubbles, new_state, state_update, config)
+
+
+# --------------------------------------------------------------------------- #
+# Не-стримовый путь (совместимость / тесты)
+# --------------------------------------------------------------------------- #
 class PipelineError(Exception):
-    """UI-facing pipeline error with a stable code/message contract."""
-
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
         self.message = message
 
 
-def _seed_current_facts(anketa: dict[str, Any]) -> dict[str, Any]:
-    """Map the Streamlit form into the schema-free facts object used by the writer."""
-    facts: dict[str, Any] = {
-        "client": {},
-        "request": {},
-        "employment": {},
-        "assets": {},
-        "household": {},
+def process_message(state: Dict, user_message: str) -> tuple[list[str], Dict, Dict]:
+    config = load_config()
+    payload = build_runtime_payload(state, user_message)
+    full_reply = llm_agent.generate_reply(payload, config)
+    result = commit_turn(state, user_message, full_reply, config)
+    return result["messages"], result["current_state"], result["raw_result"]
+
+
+def _build_result(bubbles: list[str], new_state: Dict, state_update: Dict, config: AppConfig) -> Dict:
+    return {
+        "messages": bubbles,
+        "message": "\n\n".join(bubbles),
+        "current_state": new_state,
+        "analysis": {
+            "model": config.model,
+            "dialog_phase": state_update.get("dialog_phase"),
+            "internal_summary": state_update.get("internal_summary", ""),
+            "product_fit_result": state_update.get("product_fit_result"),
+            "target_completion": state_update.get("target_completion"),
+            "ready_for_offer": state_update.get("dialog_phase") in {"handoff", "target_completion"},
+        },
+        "raw_result": state_update,
     }
 
+
+def _seed_current_facts(anketa: dict[str, Any]) -> dict[str, Any]:
+    facts: dict[str, Any] = {"client": {}, "request": {}, "employment": {}, "assets": {}, "household": {}}
     if anketa.get("full_name"):
         facts["client"]["full_name"] = anketa["full_name"]
     if anketa.get("phone"):
@@ -126,16 +160,10 @@ def _seed_current_facts(anketa: dict[str, Any]) -> dict[str, Any]:
         facts["household"]["has_dependents"] = anketa["has_dependents"]
     if anketa.get("rent_expenses"):
         facts["household"]["rent_expenses"] = anketa["rent_expenses"]
-
     return {key: value for key, value in facts.items() if value}
 
 
-def _normalize_ui_state(
-    anketa: dict[str, Any],
-    chat_history: list[dict[str, str]],
-    current_state: dict[str, Any],
-) -> dict[str, Any]:
-    """Bridge the older Streamlit state shape to the new agent runtime state."""
+def _normalize_ui_state(anketa, chat_history, current_state) -> dict[str, Any]:
     state = deepcopy(current_state or {})
     state.setdefault("current_facts", _seed_current_facts(anketa or {}))
     state.setdefault("fact_statuses", {})
@@ -145,7 +173,6 @@ def _normalize_ui_state(
 
 
 def _sync_legacy_debug_fields(state: dict[str, Any]) -> dict[str, Any]:
-    """Keep old Streamlit debug widgets alive while the runtime uses current_facts."""
     state.setdefault("selected_case", state.get("selected_product_id"))
     state.setdefault("dialog_stage", state.get("dialog_phase", "qualification"))
     state["extracted_data"] = state.get("current_facts", {})
@@ -153,31 +180,17 @@ def _sync_legacy_debug_fields(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def process_user_message(
-    anketa: dict[str, Any],
-    user_message: str,
-    chat_history: list[dict[str, str]],
-    current_state: dict[str, Any],
-) -> dict[str, Any]:
-    """Compatibility entrypoint used by app.py."""
+def process_user_message(anketa, user_message, chat_history, current_state) -> dict[str, Any]:
+    """Не-стримовый совместимый вход (для тестов/фолбэка)."""
     try:
         state = _normalize_ui_state(anketa, chat_history, current_state)
-        messages, new_state, raw_result = process_message(state, user_message)
+        return commit_turn_nonstream(state, user_message)
     except Exception as exc:
         raise PipelineError("llm_runtime_error", str(exc)) from exc
 
-    new_state = _sync_legacy_debug_fields(new_state)
-    return {
-        "messages": messages,
-        "message": "\n\n".join(messages),
-        "current_state": new_state,
-        "analysis": {
-            "model": load_config().model,
-            "dialog_phase": raw_result.get("dialog_phase"),
-            "internal_summary": raw_result.get("internal_summary", ""),
-            "product_fit_result": raw_result.get("product_fit_result"),
-            "target_completion": raw_result.get("target_completion"),
-            "ready_for_offer": raw_result.get("dialog_phase") in {"handoff", "target_completion"},
-        },
-        "raw_result": raw_result,
-    }
+
+def commit_turn_nonstream(state: Dict, user_message: str) -> dict[str, Any]:
+    config = load_config()
+    payload = build_runtime_payload(state, user_message)
+    full_reply = llm_agent.generate_reply(payload, config)
+    return commit_turn(state, user_message, full_reply, config)

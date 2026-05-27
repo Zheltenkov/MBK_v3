@@ -15,11 +15,9 @@ def _would_create_extra_list_item(path: str, facts: Dict[str, Any]) -> bool:
     parts = path.split(".")
     if len(parts) < 2 or parts[0] not in LIST_FACT_ROOTS or not _is_list_index(parts[1]):
         return False
-
     item_index = int(parts[1])
     if item_index == 0:
         return False
-
     existing_items = facts.get(parts[0])
     if not isinstance(existing_items, list):
         return True
@@ -39,7 +37,6 @@ def set_by_path(obj: Dict[str, Any], path: str, value: Any) -> None:
                 current[item_index] = {} if not _is_list_index(next_part) else []
             current = current[item_index]
             continue
-
         if not isinstance(current, dict):
             return
         if part not in current or current[part] is None:
@@ -77,39 +74,32 @@ def apply_status_updates(fact_statuses: Dict, status_updates: List[Dict]) -> Dic
     return statuses
 
 
-def enforce_hard_policy(result: Dict) -> Dict:
-    """Тонкий safety-гард по правилу №1: только прямые гарантии одобрения/выдачи.
+_FORBIDDEN_GUARANTEES = (
+    "точно одобр",
+    "гарантируем одобр",
+    "гарантированно одобр",
+    "100% одобр",
+    "гарантированно спишем",
+    "спишем 100%",
+    "мы выдадим кредит",
+    "мы выдаем кредит",
+    "мы выдаём кредит",
+    "дадим вам деньги",
+    "дадим вам денег",
+)
 
-    Намеренно НЕ ловим обороты живого специалиста («ставка будет ниже», «в районе»,
-    «шансы низкие») — иначе вернёмся к ботовости. Работаем по списку messages и
-    выкидываем только проблемный пузырь, а не весь ход.
+
+def guard_bubbles(bubbles: List[str]) -> List[str]:
+    """Тонкий safety-гард: убирает только пузыри с прямой гарантией одобрения/выдачи.
+
+    Живые обороты («ставка ниже», «в районе», «шансы низкие») НЕ трогаем.
     """
-    messages = list(result.get("messages") or [])
-    forbidden = (
-        "точно одобр",
-        "гарантируем одобр",
-        "гарантированно одобр",
-        "100% одобр",
-        "гарантированно спишем",
-        "спишем 100%",
-        "мы выдадим кредит",
-        "мы выдаем кредит",
-        "мы выдаём кредит",
-        "дадим вам деньги",
-        "дадим вам денег",
-    )
-
-    safe = [m for m in messages if not any(marker in m.lower() for marker in forbidden)]
-    if len(safe) == len(messages):
-        return result
-
+    safe = [b for b in bubbles if not any(m in b.lower() for m in _FORBIDDEN_GUARANTEES)]
+    if len(safe) == len(bubbles):
+        return bubbles
     if not safe:
-        safe = [
+        return [
             "Гарантировать одобрение или точную ставку заранее не могу — это было бы нечестно.",
             "Но могу разобрать профиль и сказать, какой маршрут реально имеет смысл.",
         ]
-
-    guarded = dict(result)
-    guarded["messages"] = safe
-    guarded["internal_summary"] = f"{result.get('internal_summary', '')} | hard_policy_guard".strip(" |")
-    return guarded
+    return safe

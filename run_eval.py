@@ -196,32 +196,20 @@ def strip_code_fence(raw: str) -> str:
 
 
 def parse_bubbles(raw: str) -> list[str]:
+    """Как в проде: пузыри разделяются пустой строкой (двойным переносом)."""
     if raw is None:
         return []
-    raw = str(raw)
-    s = strip_code_fence(raw)
-    try:
-        obj = json.loads(s)
-        if isinstance(obj, dict) and isinstance(obj.get("messages"), list):
-            return [str(x).strip() for x in obj["messages"] if str(x).strip()]
-        if isinstance(obj, list):
-            return [str(x).strip() for x in obj if str(x).strip()]
-    except json.JSONDecodeError:
-        json_start, json_end = s.find("{"), s.rfind("}")
-        if 0 <= json_start < json_end:
-            try:
-                obj = json.loads(s[json_start:json_end + 1])
-                if isinstance(obj, dict) and isinstance(obj.get("messages"), list):
-                    return [str(x).strip() for x in obj["messages"] if str(x).strip()]
-            except json.JSONDecodeError:
-                pass
-    # фолбэк: разбить по строкам
-    return [ln.strip(" -—") for ln in s.splitlines() if ln.strip()]
+    chunks = [c.strip() for c in str(raw).replace("\r\n", "\n").split("\n\n")]
+    bubbles = [c for c in chunks if c]
+    if bubbles:
+        return bubbles[:4]
+    flat = str(raw).strip()
+    return [flat] if flat else []
 
 
 def build_messages(system_prompt: str, case: dict) -> list[dict]:
-    convo = [{"role": "system", "content": system_prompt
-              + "\n\nОтветь СТРОГО JSON-объектом вида {\"messages\": [\"...\", \"...\"]}"}]
+    # Тот же формат, что в проде: свободный текст, пузыри через пустую строку (без JSON).
+    convo = [{"role": "system", "content": system_prompt}]
     for turn in case["context"]:
         role = "assistant" if turn["role"] == "operator" else "user"
         convo.append({"role": role, "content": turn["text"]})
