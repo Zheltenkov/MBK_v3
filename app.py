@@ -7,6 +7,7 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
+import observability
 from config import load_config
 from core import PipelineError, commit_turn, stream_reply
 from logger import log_dialog, log_summary
@@ -182,9 +183,22 @@ else:
             with st.chat_message("user"):
                 st.markdown(user_input)
             try:
-                with st.chat_message("assistant"):
-                    full_reply = st.write_stream(stream_reply(current_state, user_input))
-                result = commit_turn(current_state, user_input, full_reply)
+                with observability.turn(
+                    session_id=st.session_state.session_id,
+                    user_message=user_input,
+                    current_facts=current_state.get("current_facts"),
+                    anketa=st.session_state.get("anketa"),
+                ) as turn_span:
+                    with st.chat_message("assistant"):
+                        full_reply = st.write_stream(stream_reply(current_state, user_input))
+                    result = commit_turn(current_state, user_input, full_reply)
+                    observability.finalize_turn(
+                        turn_span,
+                        output={
+                            "messages": result["messages"],
+                            "analysis": result["analysis"],
+                        },
+                    )
             except PipelineError as exc:
                 st.error(f"Не удалось получить ответ ({exc.code}): {exc.message}")
                 st.stop()

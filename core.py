@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterator
 import llm_agent
 from config import AppConfig, load_config
 from prompts import split_bubbles
+from state import seed_current_facts
 from utils import apply_fact_updates, apply_status_updates, guard_bubbles
 
 
@@ -137,30 +138,9 @@ def _build_result(bubbles: list[str], new_state: Dict, state_update: Dict, confi
 
 
 def _seed_current_facts(anketa: dict[str, Any]) -> dict[str, Any]:
-    facts: dict[str, Any] = {"client": {}, "request": {}, "employment": {}, "assets": {}, "household": {}}
-    if anketa.get("full_name"):
-        facts["client"]["full_name"] = anketa["full_name"]
-    if anketa.get("phone"):
-        facts["client"]["phone"] = anketa["phone"]
-    if anketa.get("birth_date"):
-        facts["client"]["birth_date"] = anketa["birth_date"]
-    if anketa.get("desired_amount"):
-        facts["request"]["desired_amount"] = anketa["desired_amount"]
-    if anketa.get("employment_type"):
-        facts["employment"]["type"] = anketa["employment_type"]
-    if anketa.get("asset_type"):
-        facts["assets"]["type"] = anketa["asset_type"]
-    if anketa.get("has_car") is not None:
-        facts["assets"]["has_car"] = anketa["has_car"]
-    if anketa.get("has_current_loans") is not None:
-        facts["debts"] = {"has_current_loans": anketa["has_current_loans"]}
-    if anketa.get("marital_status"):
-        facts["household"]["marital_status"] = anketa["marital_status"]
-    if anketa.get("has_dependents") is not None:
-        facts["household"]["has_dependents"] = anketa["has_dependents"]
-    if anketa.get("rent_expenses"):
-        facts["household"]["rent_expenses"] = anketa["rent_expenses"]
-    return {key: value for key, value in facts.items() if value}
+    """Алиас для совместимости. Реальная реализация — в state.seed_current_facts,
+    чтобы стримовый и не-стримовый пути сеяли одну и ту же ВЛОЖЕННУЮ схему фактов."""
+    return seed_current_facts(anketa or {})
 
 
 def _normalize_ui_state(anketa, chat_history, current_state) -> dict[str, Any]:

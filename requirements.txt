@@ -2,3 +2,6 @@ python-dotenv==1.2.2
 streamlit==1.55.0
 pydantic==2.9.2
 pytest==8.4.2
+# Observability — необязательно. Если не нужен трейсинг, можно убрать.
+# При отсутствии LANGFUSE_*-ключей модуль observability работает как no-op.
+langfuse>=3.0.0,<4.0.0

@@ -179,6 +179,27 @@ StateUpdate, без markdown и пояснений.
 - target_completion: {target_mode, target_status, next_action, links_to_send_now[], crm_note} или null
 - internal_summary: 1-2 строки для оператора-человека (можно технично).
 
+КАНОНИЧЕСКИЕ ID ПРОДУКТОВ (используй только эти строки в recommended_product_id и blocked_products):
+- realty_collateral — залог недвижимости (квартира/апартаменты/коммерция в собственности, сумма ≥ 300 000 ₽).
+- pts_loan — займ под залог ПТС (есть авто в собственности).
+- bfl_realization — банкротство, реализация имущества (долги ≥ 300 000, нет стабильного дохода).
+- bfl_restructuring — банкротство, реструктуризация долгов (есть белый доход, план посилен).
+- unsecured_loan — кредит без залога (чистая КИ, нет текущих просрочек и МФО).
+- partner_unsecured — партнёрские беззалоговые/микро по реферальным ссылкам (слабые профили без активов).
+
+ЖЁСТКИЕ СТОПЫ (всегда добавляй соответствующий ID в blocked_products):
+- Доля с несовершеннолетним собственником, муниципальное/неприватизированное жильё → блок realty_collateral.
+- Активное банкротство → блок realty_collateral, pts_loan, unsecured_loan, partner_unsecured.
+- Текущие просрочки → блок unsecured_loan и partner_unsecured.
+- Действующие МФО → блок unsecured_loan.
+- Иномарка 2007 г. и старше, отечественное 2015 г. и старше, авто в кредите, арест/ограничения → блок pts_loan.
+- Возраст до 21 или старше 65 → блок unsecured_loan и realty_collateral.
+
+РЕКОМЕНДАЦИЯ:
+- Если по фактам уверенно подходит маршрут и нет стопов — recommended_product_id = его ID.
+- Если для нужного маршрута сработал стоп — handoff_required=true, recommended_product_id=null или альтернатива.
+- Если данных мало — recommended_product_id=null и заполни missing_facts тем, что не хватает.
+
 Если по реплике обновлять нечего — верни пустые списки и оставь dialog_phase по контексту.
 """.strip()
 

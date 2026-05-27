@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Iterator
 
+import observability
 from assistant_contracts import StateUpdate
 from config import AppConfig
 from prompts import (
@@ -20,8 +21,7 @@ _RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 def _is_reasoning_model(model: str) -> bool:
-    """Reasoning-модели (deepseek v4, o-серия и пр.) тормозят живой чат — гасим reasoning."""
-    m = model.lower()
+    m = (model or "").lower()
     return m.startswith("deepseek/deepseek-v4") or "reason" in m or "/o1" in m or "/o3" in m
 
 
@@ -34,16 +34,12 @@ def _headers(config: AppConfig) -> dict[str, str]:
     }
 
 
-def _maybe_suppress_reasoning(payload: dict[str, Any], config: AppConfig) -> None:
-    if _is_reasoning_model(config.model):
+def _maybe_suppress_reasoning(payload: dict[str, Any], model_name: str) -> None:
+    if _is_reasoning_model(model_name):
         payload["reasoning"] = {"effort": "none", "exclude": True}
         payload["include_reasoning"] = False
 
 
-# --------------------------------------------------------------------------- #
-# Контекст клиента (общий для обоих вызовов): что уже известно — отдельным
-# системным сообщением, чтобы не выглядело как текст клиента.
-# --------------------------------------------------------------------------- #
 def _context_block(payload: dict[str, Any]) -> str:
     facts = payload.get("current_facts", {})
     statuses = payload.get("fact_statuses", {})
@@ -79,9 +75,6 @@ def _conversation_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-# --------------------------------------------------------------------------- #
-# Сетевые вызовы
-# --------------------------------------------------------------------------- #
 def _post(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     last_error: Exception | None = None
@@ -102,8 +95,11 @@ def _post(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     raise RuntimeError(str(last_error))
 
 
-def _post_stream(config: AppConfig, payload: dict[str, Any]) -> Iterator[str]:
-    """Стримим content-дельты из OpenRouter (SSE)."""
+def _post_stream(
+    config: AppConfig, payload: dict[str, Any], usage_sink: dict | None = None
+) -> Iterator[str]:
+    """Стримим content-дельты OpenRouter (SSE). При include_usage=True последний чанк
+    содержит usage → кладём в usage_sink."""
     payload = {**payload, "stream": True}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(OPENROUTER_URL, data=body, headers=_headers(config))
@@ -119,41 +115,87 @@ def _post_stream(config: AppConfig, payload: dict[str, Any]) -> Iterator[str]:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
+            if usage_sink is not None and isinstance(chunk.get("usage"), dict):
+                usage_sink.update(chunk["usage"])
             delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
             piece = delta.get("content")
             if piece:
                 yield piece
 
 
-# --------------------------------------------------------------------------- #
-# Публичный API
-# --------------------------------------------------------------------------- #
 def stream_conversation(payload: dict[str, Any], config: AppConfig) -> Iterator[str]:
-    """Живой разговорный ответ клиенту — чистый текст, токен за токеном (как GPT)."""
+    """Живой ответ токен за токеном. Каждый вызов трассируется как Langfuse generation."""
+    messages = _conversation_messages(payload)
     body: dict[str, Any] = {
         "model": config.model,
-        "messages": _conversation_messages(payload),
+        "messages": messages,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
+        "stream_options": {"include_usage": True},
     }
-    _maybe_suppress_reasoning(body, config)
-    yield from _post_stream(config, body)
+    _maybe_suppress_reasoning(body, config.model)
+
+    usage_sink: dict = {}
+    collected: list[str] = []
+    err: str | None = None
+    with observability.generation(
+        name="conversation",
+        model=config.model,
+        input_messages=messages,
+        model_parameters={
+            "temperature": config.temperature,
+            "max_tokens": config.max_tokens,
+            "stream": True,
+        },
+    ) as gen:
+        try:
+            for piece in _post_stream(config, body, usage_sink):
+                collected.append(piece)
+                yield piece
+        except BaseException as exc:  # noqa: BLE001 — нужно поймать всё, чтобы залогировать ошибку
+            err = repr(exc)
+            raise
+        finally:
+            observability.finalize_generation(
+                gen,
+                output="".join(collected),
+                usage=observability.usage_from_openrouter(usage_sink),
+                error=err,
+            )
 
 
 def generate_reply(payload: dict[str, Any], config: AppConfig) -> str:
-    """Не-стримовый вариант того же разговорного ответа (для эвала/совместимости)."""
+    """Не-стримовый разговорный ответ (для эвала/совместимости)."""
+    messages = _conversation_messages(payload)
     body: dict[str, Any] = {
         "model": config.model,
-        "messages": _conversation_messages(payload),
+        "messages": messages,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
     }
-    _maybe_suppress_reasoning(body, config)
-    data = _post(config, body)
-    content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
-    if not content:
-        raise RuntimeError("empty conversation content from model")
-    return str(content)
+    _maybe_suppress_reasoning(body, config.model)
+
+    with observability.generation(
+        name="conversation",
+        model=config.model,
+        input_messages=messages,
+        model_parameters={"temperature": config.temperature, "max_tokens": config.max_tokens},
+    ) as gen:
+        try:
+            data = _post(config, body)
+        except Exception as exc:
+            observability.finalize_generation(gen, error=repr(exc))
+            raise
+        content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+        if not content:
+            observability.finalize_generation(gen, error="empty content")
+            raise RuntimeError("empty conversation content from model")
+        observability.finalize_generation(
+            gen,
+            output=str(content),
+            usage=observability.usage_from_openrouter(data.get("usage")),
+        )
+        return str(content)
 
 
 def _strip_code_fence(raw: str) -> str:
@@ -179,7 +221,6 @@ def _extract_json(raw: str) -> dict[str, Any]:
 
 
 def extract_state(payload: dict[str, Any], assistant_reply: str, config: AppConfig) -> dict[str, Any]:
-    """Молчаливый бэкенд-разбор хода в StateUpdate. Клиент его не видит."""
     extractor_model = config.extractor_model or config.model
     user_content = (
         f"{_context_block(payload)}\n\n"
@@ -187,23 +228,43 @@ def extract_state(payload: dict[str, Any], assistant_reply: str, config: AppConf
         f"Ответ оператора:\n{assistant_reply}\n\n"
         "Верни только JSON-объект StateUpdate."
     )
+    messages = [
+        {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
     body: dict[str, Any] = {
         "model": extractor_model,
-        "messages": [
-            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+        "messages": messages,
         "temperature": 0.0,
         "max_tokens": 900,
         "response_format": {"type": "json_object"},
     }
-    if _is_reasoning_model(extractor_model):
-        body["reasoning"] = {"effort": "none", "exclude": True}
-        body["include_reasoning"] = False
+    _maybe_suppress_reasoning(body, extractor_model)
 
-    data = _post(config, body)
-    content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
-    if not content:
-        raise RuntimeError("empty extractor content from model")
-    parsed = _extract_json(str(content))
-    return StateUpdate.model_validate(parsed).model_dump()
+    with observability.generation(
+        name="extraction",
+        model=extractor_model,
+        input_messages=messages,
+        model_parameters={"temperature": 0.0, "max_tokens": 900, "response_format": "json_object"},
+    ) as gen:
+        try:
+            data = _post(config, body)
+        except Exception as exc:
+            observability.finalize_generation(gen, error=repr(exc))
+            raise
+        content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+        if not content:
+            observability.finalize_generation(gen, error="empty extractor content")
+            raise RuntimeError("empty extractor content from model")
+        try:
+            parsed = _extract_json(str(content))
+            validated = StateUpdate.model_validate(parsed).model_dump()
+        except Exception as exc:
+            observability.finalize_generation(gen, output=str(content), error=f"validate: {exc}")
+            raise
+        observability.finalize_generation(
+            gen,
+            output=validated,
+            usage=observability.usage_from_openrouter(data.get("usage")),
+        )
+        return validated
