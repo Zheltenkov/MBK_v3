@@ -152,6 +152,7 @@ with st.sidebar:
             "asset_type": asset_type if asset_type != "—" else None,
         }
         st.session_state.state = init_dialog_state(st.session_state.anketa)
+        st.session_state.state["session_id"] = st.session_state.session_id
         st.session_state.applied_form = {k: v for k, v in st.session_state.anketa.items() if v is not None}
         st.session_state.turn_records = []
         st.success("✅ Анкета применена. Диалог запущен.")
@@ -174,6 +175,9 @@ else:
     for msg in chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+
+    if current_state.get("lead_delivered"):
+        st.success(f"✅ {current_state.get('lead_delivery_status', 'Лид передан специалисту.')}")
 
     if dialog_closed:
         st.success(f"Диалог завершён. Сценарий: {current_state.get('selected_case') or 'не выбран'}.")

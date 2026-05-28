@@ -226,7 +226,7 @@ def judge(model: str, user_input: str, a: list[str], b: list[str]) -> str:
               f"Ответ A:\n" + "\n".join(a) + "\n\nОтвет B:\n" + "\n".join(b))
     out = openrouter_chat(model, [{"role": "system", "content": JUDGE_SYS},
                                   {"role": "user", "content": prompt}],
-                          temperature=0, max_tokens=3)
+                          temperature=0, max_tokens=16)
     return "A" if "a" in out.lower()[:3] else "B"
 
 
@@ -237,7 +237,7 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
 
     print(f"\n=== {model} -> {resolved_model} ===")
 
-    if args.concurrency > 1 and not args.judge:
+    if args.concurrency > 1:
         def run_one(index_case: tuple[int, dict]) -> dict:
             i, c = index_case
             raw = openrouter_chat(
@@ -249,6 +249,15 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
             cand = parse_bubbles(raw)
             cs, reasons = heuristic_score(cand)
             rs, _ = heuristic_score(c["reference_bubbles"])
+            judge_candidate_win = None
+            if args.judge:
+                # Детерминированно чередуем порядок, чтобы параллельный прогон был воспроизводимым.
+                cand_is_a = i % 2 == 1
+                if cand_is_a:
+                    w = judge(args.judge, c["user_input"], cand, c["reference_bubbles"])
+                else:
+                    w = judge(args.judge, c["user_input"], c["reference_bubbles"], cand)
+                judge_candidate_win = (w == "A") == cand_is_a
             return {
                 "index": i,
                 "case": c,
@@ -256,6 +265,7 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
                 "candidate_score": cs,
                 "reference_score": rs,
                 "reasons": reasons,
+                "judge_candidate_win": judge_candidate_win,
             }
 
         completed = []
@@ -276,6 +286,10 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
 
                 cand_scores.append(item["candidate_score"])
                 ref_scores.append(item["reference_score"])
+                if item["judge_candidate_win"] is not None:
+                    judged += 1
+                    if item["judge_candidate_win"]:
+                        judge_wins += 1
                 if i <= 3 or item["candidate_score"] < 60:
                     print(f"  [{i}] {c['id']} score={item['candidate_score']} "
                           f"ref={item['reference_score']} bubbles={len(item['candidate'])} "
@@ -283,9 +297,6 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
 
         completed.sort(key=lambda x: x["index"])
     else:
-        if args.concurrency > 1 and args.judge:
-            print("  --judge включён: параллельность отключена, чтобы не смешивать сравнения судьи")
-
         for i, c in enumerate(cases, 1):
             try:
                 raw = openrouter_chat(

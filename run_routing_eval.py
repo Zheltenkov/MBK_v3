@@ -16,7 +16,10 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 HERE = Path(__file__).resolve().parent
+load_dotenv(HERE / ".env")
 CASES = json.loads((HERE / "routing_cases.json").read_text(encoding="utf-8"))
 
 
@@ -34,9 +37,13 @@ def evaluate_case(state_update: dict, expected: dict) -> tuple[bool, list[str]]:
     if expected_rec:
         if actual_rec != expected_rec:
             reasons.append(f"recommended: ожидали {expected_rec!r}, получили {actual_rec!r}")
-    elif actual_rec:
-        # Ожидали null (жёсткий стоп) — но если модель дала допустимую альтернативу, не штрафуем.
-        pass
+    elif "recommended" in expected and actual_rec:
+        reasons.append(f"recommended: ожидали null, получили {actual_rec!r}")
+
+    # Не рекомендовать то, от чего клиент отказался / что заблокировано
+    not_rec = {_normalize_id(x) for x in expected.get("not_recommended", [])}
+    if actual_rec and actual_rec in not_rec:
+        reasons.append(f"рекомендован запрещённый/отклонённый маршрут {actual_rec!r}")
 
     actual_blocked = {_normalize_id(x) for x in (pfr.get("blocked_products") or [])}
     for required in expected.get("blocked_includes", []):
@@ -58,12 +65,20 @@ def run_case(case: dict, model: str, extractor_model: str | None) -> dict:
         temperature=0.0,
         max_tokens=900,
     )
+    short_history = []
+    for turn in case.get("context", []):
+        role = "assistant" if turn.get("role") == "operator" else "user"
+        text = str(turn.get("text", "")).strip()
+        if text:
+            short_history.append({"role": role, "content": text})
+
     payload = {
         "current_facts": case["facts"],
         "fact_statuses": {},
-        "short_history": [],
+        "short_history": short_history,
         "latest_user_message": case["user_input"],
         "business_rules_summary": "Маршрутизируй по фактам и стоп-факторам. Не торопись с recommended, если данных мало.",
+        "declined_products": case.get("declined_products", []),
     }
     # Ответ оператора почти не влияет — это бэкенд-разбор; даём нейтральный текст.
     assistant_reply = "Понял ситуацию, посмотрю по вариантам."

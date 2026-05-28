@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 from typing import Any, Iterator
 
 _REDACT_KEYS = {"phone", "full_name", "registration_address", "living_address", "birth_date"}
@@ -76,31 +77,46 @@ def turn(
         yield None
         return
     try:
-        with client.start_as_current_observation(
+        cm = client.start_as_current_observation(
             as_type="span",
             name="mbk_turn",
             input={
                 "user_message": user_message,
                 "current_facts_redacted": _redact(current_facts or {}),
             },
-        ) as span:
-            try:
-                span.update_trace(
-                    session_id=session_id,
-                    metadata={"anketa_redacted": _redact(anketa or {})},
-                )
-            except Exception:
-                pass
-            try:
-                yield span
-            finally:
-                try:
-                    client.flush()
-                except Exception:
-                    pass
+        )
+        span = cm.__enter__()
     except Exception:
         # Любая поломка трейсинга — диалог продолжается
         yield None
+        return
+
+    try:
+        try:
+            span.update_trace(
+                session_id=session_id,
+                metadata={"anketa_redacted": _redact(anketa or {})},
+            )
+        except Exception:
+            pass
+        yield span
+    except BaseException:
+        exc_info = sys.exc_info()
+        try:
+            cm.__exit__(*exc_info)
+        except Exception:
+            pass
+        raise
+    else:
+        try:
+            cm.__exit__(None, None, None)
+        except Exception:
+            pass
+    finally:
+        try:
+            client.flush()
+        except Exception:
+            pass
 
 
 @contextlib.contextmanager
@@ -116,16 +132,32 @@ def generation(
         yield None
         return
     try:
-        with client.start_as_current_observation(
+        cm = client.start_as_current_observation(
             as_type="generation",
             name=name,
             model=model,
             input=input_messages or [],
             model_parameters=model_parameters or {},
-        ) as gen:
-            yield gen
+        )
+        gen = cm.__enter__()
     except Exception:
         yield None
+        return
+
+    try:
+        yield gen
+    except BaseException:
+        exc_info = sys.exc_info()
+        try:
+            cm.__exit__(*exc_info)
+        except Exception:
+            pass
+        raise
+    else:
+        try:
+            cm.__exit__(None, None, None)
+        except Exception:
+            pass
 
 
 def finalize_generation(

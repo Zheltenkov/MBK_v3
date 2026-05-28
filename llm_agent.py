@@ -8,7 +8,7 @@ import urllib.request
 from typing import Any, Iterator
 
 import observability
-from assistant_contracts import StateUpdate
+from assistant_contracts import FactUpdate, ProductFitResult, StateUpdate, StatusUpdate, TargetCompletion
 from config import AppConfig
 from prompts import (
     CONVERSATION_SYSTEM_PROMPT,
@@ -53,6 +53,9 @@ def _context_block(payload: dict[str, Any]) -> str:
     )
     if statuses:
         parts.append("Статусы фактов:\n" + json.dumps(statuses, ensure_ascii=False))
+    declined = payload.get("declined_products") or []
+    if declined:
+        parts.append("Клиент уже отказался от вариантов (НЕ предлагай их снова): " + ", ".join(declined))
     return "\n\n".join(parts)
 
 
@@ -220,6 +223,32 @@ def _extract_json(raw: str) -> dict[str, Any]:
     return value
 
 
+def _keep_model_fields(value: Any, model_cls: type) -> Any:
+    """Drop harmless extra keys from LLM JSON while keeping the public contract strict."""
+    if not isinstance(value, dict):
+        return value
+    allowed = set(model_cls.model_fields)
+    return {key: item for key, item in value.items() if key in allowed}
+
+
+def _sanitize_state_update_payload(value: dict[str, Any]) -> dict[str, Any]:
+    """Repair common extractor drift before schema validation.
+
+    The Pydantic models stay `extra=forbid`; this adapter is the explicit repair layer for
+    model output, so harmless keys like status_updates[].source do not break the turn.
+    """
+    clean = _keep_model_fields(value, StateUpdate)
+    if isinstance(clean.get("fact_updates"), list):
+        clean["fact_updates"] = [_keep_model_fields(item, FactUpdate) for item in clean["fact_updates"]]
+    if isinstance(clean.get("status_updates"), list):
+        clean["status_updates"] = [_keep_model_fields(item, StatusUpdate) for item in clean["status_updates"]]
+    if isinstance(clean.get("product_fit_result"), dict):
+        clean["product_fit_result"] = _keep_model_fields(clean["product_fit_result"], ProductFitResult)
+    if isinstance(clean.get("target_completion"), dict):
+        clean["target_completion"] = _keep_model_fields(clean["target_completion"], TargetCompletion)
+    return clean
+
+
 def extract_state(payload: dict[str, Any], assistant_reply: str, config: AppConfig) -> dict[str, Any]:
     extractor_model = config.extractor_model or config.model
     user_content = (
@@ -258,7 +287,7 @@ def extract_state(payload: dict[str, Any], assistant_reply: str, config: AppConf
             raise RuntimeError("empty extractor content from model")
         try:
             parsed = _extract_json(str(content))
-            validated = StateUpdate.model_validate(parsed).model_dump()
+            validated = StateUpdate.model_validate(_sanitize_state_update_payload(parsed)).model_dump()
         except Exception as exc:
             observability.finalize_generation(gen, output=str(content), error=f"validate: {exc}")
             raise

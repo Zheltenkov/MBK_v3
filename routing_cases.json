@@ -3,139 +3,479 @@
     "id": "r01_realty_clear_fit",
     "label": "Залог недвижимости — чистый кейс",
     "facts": {
-      "client": {"full_name": "Иван", "age": 42},
-      "request": {"desired_amount": 500000},
-      "assets": {"type": "Недвижимость", "realty": {"kind": "квартира", "city": "Москва", "owned_free_and_clear": true}},
-      "debts": {"total": 600000}
+      "client": {
+        "full_name": "Иван",
+        "age": 42
+      },
+      "request": {
+        "desired_amount": 500000
+      },
+      "assets": {
+        "type": "Недвижимость",
+        "realty": {
+          "kind": "квартира",
+          "city": "Москва",
+          "owned_free_and_clear": true
+        }
+      },
+      "debts": {
+        "total": 600000
+      }
     },
     "user_input": "Квартира в Москве полностью моя, без ипотеки. Нужно 500 тысяч на закрытие кредитов.",
-    "expected": {"recommended": "realty_collateral", "blocked_includes": []}
+    "expected": {
+      "recommended": "realty_collateral",
+      "blocked_includes": []
+    }
   },
   {
     "id": "r02_pts_clear_fit",
     "label": "Залог ПТС — чистый кейс (Kia Rio 2019)",
     "facts": {
-      "client": {"full_name": "Катерина", "age": 35},
-      "request": {"desired_amount": 300000},
-      "assets": {"has_car": true, "vehicle": {"model": "Kia Rio", "year": 2019, "owned_free_and_clear": true}},
-      "debts": {"has_mfo": true}
+      "client": {
+        "full_name": "Катерина",
+        "age": 35
+      },
+      "request": {
+        "desired_amount": 300000
+      },
+      "assets": {
+        "has_car": true,
+        "vehicle": {
+          "model": "Kia Rio",
+          "year": 2019,
+          "owned_free_and_clear": true
+        }
+      },
+      "debts": {
+        "has_mfo": true
+      }
     },
     "user_input": "Машина моя, без кредитов и арестов, нужно 300к",
-    "expected": {"recommended": "pts_loan", "blocked_includes": ["unsecured_loan"]}
+    "expected": {
+      "recommended": "pts_loan",
+      "blocked_includes": [
+        "unsecured_loan"
+      ]
+    }
   },
   {
     "id": "r03_bfl_realization_clear_fit",
     "label": "Банкротство-реализация — нет дохода, большие долги",
     "facts": {
-      "client": {"age": 48},
-      "debts": {"total": 1200000},
-      "employment": {"type": "безработный"},
-      "assets": {"type": "Нет активов"}
+      "client": {
+        "age": 48
+      },
+      "debts": {
+        "total": 1200000
+      },
+      "employment": {
+        "type": "безработный"
+      },
+      "assets": {
+        "type": "Нет активов"
+      }
     },
     "user_input": "Платить нечем, долгов больше миллиона, кредиторы каждый день звонят.",
-    "expected": {"recommended": "bfl_realization", "blocked_includes": []}
+    "expected": {
+      "recommended": "bfl_realization",
+      "blocked_includes": []
+    }
   },
   {
     "id": "r04_bfl_restructuring_clear_fit",
     "label": "Реструктуризация — стабильный белый доход",
     "facts": {
-      "client": {"age": 38},
-      "debts": {"total": 800000},
-      "employment": {"type": "найм", "monthly_income": 80000},
-      "household": {"has_dependents": true}
+      "client": {
+        "age": 38
+      },
+      "debts": {
+        "total": 800000
+      },
+      "employment": {
+        "type": "найм",
+        "monthly_income": 80000
+      },
+      "household": {
+        "has_dependents": true
+      }
     },
     "user_input": "Долгов на 800к, зарплата 80, дочка маленькая. Не хочу всё терять, можно как-то распланировать?",
-    "expected": {"recommended": "bfl_restructuring", "blocked_includes": []}
+    "expected": {
+      "recommended": "bfl_restructuring",
+      "blocked_includes": []
+    }
   },
   {
     "id": "r05_unsecured_clear_fit",
     "label": "Беззалог — чистая КИ, нет МФО, доход",
     "facts": {
-      "client": {"age": 32},
-      "request": {"desired_amount": 200000},
-      "employment": {"type": "найм", "monthly_income": 120000},
-      "debts": {"has_mfo": false, "has_current_overdue": false}
+      "client": {
+        "age": 32
+      },
+      "request": {
+        "desired_amount": 200000
+      },
+      "employment": {
+        "type": "найм",
+        "monthly_income": 120000
+      },
+      "debts": {
+        "has_mfo": false,
+        "has_current_overdue": false
+      }
     },
     "user_input": "Просто 200к на ремонт. Кредитная история нормальная, МФО не беру.",
-    "expected": {"recommended": "unsecured_loan", "blocked_includes": []}
+    "expected": {
+      "recommended": "unsecured_loan",
+      "blocked_includes": []
+    }
   },
   {
     "id": "r06_stop_minor_co_owner",
     "label": "Стоп: несовершеннолетний в долях квартиры",
     "facts": {
-      "client": {"age": 41},
-      "request": {"desired_amount": 1500000},
-      "assets": {"realty": {"kind": "квартира", "has_minor_co_owner": true}}
+      "client": {
+        "age": 41
+      },
+      "request": {
+        "desired_amount": 1500000
+      },
+      "assets": {
+        "realty": {
+          "kind": "квартира",
+          "has_minor_co_owner": true
+        }
+      }
     },
     "user_input": "Хочу залог квартиры на 1.5 млн. В долях дочка 14 лет.",
-    "expected": {"recommended": null, "blocked_includes": ["realty_collateral"]}
+    "expected": {
+      "recommended": null,
+      "blocked_includes": [
+        "realty_collateral"
+      ]
+    }
   },
   {
     "id": "r07_stop_active_bankruptcy",
     "label": "Стоп: активное банкротство — блокирует всё кредитное",
     "facts": {
-      "client": {"age": 45},
-      "request": {"desired_amount": 300000},
-      "bankruptcy": {"active": true}
+      "client": {
+        "age": 45
+      },
+      "request": {
+        "desired_amount": 300000
+      },
+      "bankruptcy": {
+        "active": true
+      }
     },
     "user_input": "Сейчас прохожу банкротство, но срочно нужны 300к на ремонт.",
-    "expected": {"recommended": null, "blocked_includes": ["realty_collateral", "pts_loan", "unsecured_loan"]}
+    "expected": {
+      "recommended": null,
+      "blocked_includes": [
+        "realty_collateral",
+        "pts_loan",
+        "unsecured_loan"
+      ]
+    }
   },
   {
     "id": "r08_stop_current_overdue_for_unsecured",
     "label": "Стоп: текущая просрочка блокирует беззалог",
     "facts": {
-      "client": {"age": 36},
-      "request": {"desired_amount": 250000},
-      "debts": {"has_current_overdue": true},
-      "assets": {"type": "Нет активов"}
+      "client": {
+        "age": 36
+      },
+      "request": {
+        "desired_amount": 250000
+      },
+      "debts": {
+        "has_current_overdue": true
+      },
+      "assets": {
+        "type": "Нет активов"
+      }
     },
     "user_input": "Сейчас есть просрочка на 2 месяца, но срочно нужны 250к.",
-    "expected": {"recommended": null, "blocked_includes": ["unsecured_loan"]}
+    "expected": {
+      "recommended": null,
+      "blocked_includes": [
+        "unsecured_loan"
+      ]
+    }
   },
   {
     "id": "r09_stop_old_foreign_car_blocks_pts",
     "label": "Стоп: иномарка 2005 года → ПТС не подходит",
     "facts": {
-      "client": {"age": 39},
-      "request": {"desired_amount": 200000},
-      "assets": {"has_car": true, "vehicle": {"model": "Mercedes E", "year": 2005, "is_foreign": true}}
+      "client": {
+        "age": 39
+      },
+      "request": {
+        "desired_amount": 200000
+      },
+      "assets": {
+        "has_car": true,
+        "vehicle": {
+          "model": "Mercedes E",
+          "year": 2005,
+          "is_foreign": true
+        }
+      }
     },
     "user_input": "Машина моя, Мерседес 2005, нужны 200к.",
-    "expected": {"recommended": null, "blocked_includes": ["pts_loan"]}
+    "expected": {
+      "recommended": null,
+      "blocked_includes": [
+        "pts_loan"
+      ]
+    }
   },
   {
     "id": "r10_stop_municipal_realty",
     "label": "Стоп: муниципальное жильё → залог недвижимости не подходит",
     "facts": {
-      "client": {"age": 50},
-      "request": {"desired_amount": 700000},
-      "assets": {"realty": {"kind": "квартира", "is_municipal": true, "is_privatized": false}}
+      "client": {
+        "age": 50
+      },
+      "request": {
+        "desired_amount": 700000
+      },
+      "assets": {
+        "realty": {
+          "kind": "квартира",
+          "is_municipal": true,
+          "is_privatized": false
+        }
+      }
     },
     "user_input": "Квартира муниципальная, не приватизирована. Нужно 700к под её залог.",
-    "expected": {"recommended": null, "blocked_includes": ["realty_collateral"]}
+    "expected": {
+      "recommended": null,
+      "blocked_includes": [
+        "realty_collateral"
+      ]
+    }
   },
   {
     "id": "r11_mfo_blocks_unsecured_route_to_pts",
     "label": "МФО блокируют беззалог, но есть авто → ПТС",
     "facts": {
-      "client": {"age": 34},
-      "request": {"desired_amount": 200000},
-      "debts": {"has_mfo": true},
-      "assets": {"has_car": true, "vehicle": {"model": "Kia Rio", "year": 2019, "owned_free_and_clear": true}}
+      "client": {
+        "age": 34
+      },
+      "request": {
+        "desired_amount": 200000
+      },
+      "debts": {
+        "has_mfo": true
+      },
+      "assets": {
+        "has_car": true,
+        "vehicle": {
+          "model": "Kia Rio",
+          "year": 2019,
+          "owned_free_and_clear": true
+        }
+      }
     },
     "user_input": "Есть микрозаймы, нужны ещё 200к. Машина моя, Киа Рио 2019, чистая.",
-    "expected": {"recommended": "pts_loan", "blocked_includes": ["unsecured_loan"]}
+    "expected": {
+      "recommended": "pts_loan",
+      "blocked_includes": [
+        "unsecured_loan"
+      ]
+    }
   },
   {
     "id": "r12_underage_client_blocks_credit_paths",
     "label": "Стоп: возраст 20 — блокирует беззалог и залог недвижимости",
     "facts": {
-      "client": {"age": 20},
-      "request": {"desired_amount": 300000},
-      "employment": {"type": "найм"}
+      "client": {
+        "age": 20
+      },
+      "request": {
+        "desired_amount": 300000
+      },
+      "employment": {
+        "type": "найм"
+      }
     },
     "user_input": "Мне 20, нужны 300к.",
-    "expected": {"recommended": null, "blocked_includes": ["unsecured_loan", "realty_collateral"]}
+    "expected": {
+      "recommended": null,
+      "blocked_includes": [
+        "unsecured_loan",
+        "realty_collateral"
+      ]
+    }
+  },
+  {
+    "id": "r13_refuse_realty_pivot_pts",
+    "label": "Отказ от залога недвижимости при наличии авто → ПТС",
+    "facts": {
+      "client": {
+        "age": 40
+      },
+      "request": {
+        "desired_amount": 500000
+      },
+      "assets": {
+        "type": "Недвижимость",
+        "realty": {
+          "kind": "квартира",
+          "owned_free_and_clear": true
+        },
+        "has_car": true,
+        "vehicle": {
+          "model": "Kia Rio",
+          "year": 2019,
+          "owned_free_and_clear": true
+        }
+      }
+    },
+    "declined_products": [
+      "realty_collateral"
+    ],
+    "context": [
+      {
+        "role": "operator",
+        "text": "По сумме лучше всего подходит залог недвижимости."
+      }
+    ],
+    "user_input": "Квартиру закладывать не готов. А машину можно вместо этого?",
+    "expected": {
+      "recommended": "pts_loan",
+      "not_recommended": [
+        "realty_collateral"
+      ],
+      "blocked_includes": []
+    }
+  },
+  {
+    "id": "r14_refuse_unsecured_pivot_realty",
+    "label": "Отказ от беззалога (не хочет заявок в БКИ) при наличии квартиры → залог недвижимости",
+    "facts": {
+      "client": {
+        "age": 45
+      },
+      "request": {
+        "desired_amount": 700000
+      },
+      "assets": {
+        "realty": {
+          "kind": "квартира",
+          "owned_free_and_clear": true
+        }
+      },
+      "employment": {
+        "type": "найм",
+        "monthly_income": 110000
+      }
+    },
+    "declined_products": [
+      "unsecured_loan"
+    ],
+    "context": [
+      {
+        "role": "operator",
+        "text": "С чистой историей можно попробовать беззалоговый кредит."
+      }
+    ],
+    "user_input": "Беззалоговый не хочу, не хочу лишних запросов в БКИ. Что ещё есть?",
+    "expected": {
+      "recommended": "realty_collateral",
+      "not_recommended": [
+        "unsecured_loan"
+      ],
+      "blocked_includes": []
+    }
+  },
+  {
+    "id": "r15_refuse_bankruptcy_honest_deadend",
+    "label": "Отказ от банкротства, других рабочих путей нет → честный тупик, без выдумки",
+    "facts": {
+      "client": {
+        "age": 50
+      },
+      "request": {
+        "desired_amount": 300000
+      },
+      "debts": {
+        "total": 1500000,
+        "has_current_overdue": true
+      },
+      "employment": {
+        "type": "безработный"
+      },
+      "assets": {
+        "type": "Нет активов"
+      }
+    },
+    "declined_products": [
+      "bfl_realization"
+    ],
+    "context": [
+      {
+        "role": "operator",
+        "text": "С таким профилем реально работает только списание долгов через банкротство."
+      }
+    ],
+    "user_input": "Банкротство не хочу, не для меня. Дайте просто кредит.",
+    "expected": {
+      "recommended": null,
+      "not_recommended": [
+        "bfl_realization",
+        "unsecured_loan",
+        "realty_collateral",
+        "pts_loan"
+      ],
+      "blocked_includes": [
+        "unsecured_loan"
+      ]
+    }
+  },
+  {
+    "id": "r16_refuse_realty_no_car_honest_deadend",
+    "label": "Отказ от залога недвижимости, авто нет, профиль слабый → честный тупик",
+    "facts": {
+      "client": {
+        "age": 38
+      },
+      "request": {
+        "desired_amount": 1000000
+      },
+      "assets": {
+        "realty": {
+          "kind": "квартира",
+          "owned_free_and_clear": true
+        },
+        "has_car": false
+      },
+      "debts": {
+        "has_mfo": true,
+        "has_current_overdue": true
+      }
+    },
+    "declined_products": [
+      "realty_collateral"
+    ],
+    "context": [
+      {
+        "role": "operator",
+        "text": "На миллион реально подходит только залог квартиры."
+      }
+    ],
+    "user_input": "Квартиру в залог не дам. Без неё никак?",
+    "expected": {
+      "recommended": null,
+      "not_recommended": [
+        "realty_collateral"
+      ],
+      "blocked_includes": [
+        "unsecured_loan"
+      ]
+    }
   }
 ]

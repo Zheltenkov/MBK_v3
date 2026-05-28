@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any, Dict, Iterator
 
 import llm_agent
+import lead_delivery
 from config import AppConfig, load_config
 from prompts import split_bubbles
 from state import seed_current_facts
@@ -45,6 +46,7 @@ def build_runtime_payload(state: Dict, latest_user_message: str) -> Dict:
         "short_history": state.get("chat_history", [])[-10:],
         "latest_user_message": latest_user_message,
         "business_rules_summary": BUSINESS_RULES_SUMMARY,
+        "declined_products": state.get("declined_products", []),
     }
 
 
@@ -65,6 +67,12 @@ def apply_updates(state: Dict, state_update: Dict, user_message: str, bubbles: l
         new_state["target_completion"] = target_completion
     if phase := state_update.get("dialog_phase"):
         new_state["dialog_phase"] = phase
+
+    declined = list(state.get("declined_products", []))
+    for pid in state_update.get("declined_products", []):
+        if pid and pid not in declined:
+            declined.append(pid)
+    new_state["declined_products"] = declined
 
     history = new_state.setdefault("chat_history", [])
     history.append({"role": "user", "content": user_message})
@@ -99,7 +107,15 @@ def commit_turn(state: Dict, user_message: str, full_reply: str, config: AppConf
 
     new_state = apply_updates(state, state_update, user_message, bubbles)
     new_state = _sync_legacy_debug_fields(new_state)
-    return _build_result(bubbles, new_state, state_update, config)
+    result = _build_result(bubbles, new_state, state_update, config)
+
+    # Доставка лида (заглушка/вебхук). Срабатывает только при уверенном хендоффе.
+    delivery = lead_delivery.maybe_deliver(new_state, result["analysis"])
+    if delivery:
+        new_state["lead_delivered"] = delivery["lead"]
+        new_state["lead_delivery_status"] = delivery["message"]
+        result["lead_delivery"] = delivery
+    return result
 
 
 # --------------------------------------------------------------------------- #

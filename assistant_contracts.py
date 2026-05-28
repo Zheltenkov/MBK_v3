@@ -70,6 +70,7 @@ class StateUpdate(BaseModel):
     status_updates: list[StatusUpdate] = Field(default_factory=list)
     product_fit_result: ProductFitResult | None = None
     target_completion: TargetCompletion | None = None
+    declined_products: list[str] = Field(default_factory=list)
     internal_summary: str = ""
 
 
