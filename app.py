@@ -2,6 +2,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 import observability
-from core import PipelineError, commit_turn, stream_reply
+from core import PipelineError, commit_bubbles_only, commit_turn, finalize_extraction, stream_reply
 from logger import log_dialog, log_summary
 from state import init_dialog_state, should_close_dialog
 
@@ -209,6 +210,24 @@ else:
     if dialog_closed:
         st.success(f"Диалог завершён. Сценарий: {current_state.get('selected_case') or 'не выбран'}.")
     else:
+        # Перед очередным стримом дожимаем фоновое извлечение с предыдущего хода,
+        # чтобы новый ход стартовал с уже обновлёнными фактами / declined / lead_delivered.
+        pending: Future | None = st.session_state.get("_pending_extraction")
+        if pending is not None and not pending.done():
+            with st.status("Дописываю предыдущий ход…", expanded=False):
+                try:
+                    pending.result(timeout=20)
+                except Exception:  # noqa: BLE001 — UI выживает; разговор пойдёт по чуть устаревшим фактам
+                    pass
+        if pending is not None and pending.done():
+            try:
+                extraction_result = pending.result(timeout=0)
+                current_state = extraction_result["current_state"]
+                st.session_state.state = current_state
+            except Exception:  # noqa: BLE001
+                pass
+            st.session_state._pending_extraction = None
+
         user_input = st.chat_input("Напишите сообщение клиенту...")
         if user_input:
             with st.chat_message("user"):
@@ -222,15 +241,24 @@ else:
                 ) as turn_span:
                     with st.chat_message("assistant", avatar="💬"):
                         full_reply = st.write_stream(stream_reply(current_state, user_input))
-                    with st.status("💾 Передаю в работу...", expanded=False) as status:
-                        result = commit_turn(current_state, user_input, full_reply)
-                        status.update(label="✓ Готово", state="complete")
+
+                    # Быстрая фаза: пузыри сразу в state — пользователь видит ответ без паузы.
+                    bubbles_phase = commit_bubbles_only(current_state, user_input, full_reply)
+                    state_after_bubbles = bubbles_phase["current_state"]
+
+                    # Медленная фаза: извлекатель в фоне; не блокирует следующий ход,
+                    # пока пользователь читает/печатает.
+                    executor: ThreadPoolExecutor = st.session_state.setdefault(
+                        "_extractor_pool", ThreadPoolExecutor(max_workers=2, thread_name_prefix="mbk-extractor")
+                    )
+                    future = executor.submit(
+                        finalize_extraction, state_after_bubbles, user_input, full_reply
+                    )
+                    st.session_state._pending_extraction = future
+
                     observability.finalize_turn(
                         turn_span,
-                        output={
-                            "messages": result["messages"],
-                            "analysis": result["analysis"],
-                        },
+                        output={"messages": bubbles_phase["messages"]},
                     )
             except PipelineError as exc:
                 st.error(f"Не удалось получить ответ ({exc.code}): {exc.message}")
@@ -239,12 +267,20 @@ else:
                 st.error(f"Ошибка обращения к модели: {exc}")
                 st.stop()
 
-            log_dialog(st.session_state.session_id, user_input, True, result["current_state"], result["analysis"])
-            log_dialog(st.session_state.session_id, result["message"], False, result["current_state"], result["analysis"])
+            log_dialog(st.session_state.session_id, user_input, True, state_after_bubbles, {})
+            log_dialog(
+                st.session_state.session_id, "\n\n".join(bubbles_phase["messages"]), False, state_after_bubbles, {}
+            )
 
-            st.session_state.state = result["current_state"]
-            st.session_state.turn_records.append(result)
-            if is_dialog_closed(st.session_state.state, result.get("analysis", {})):
+            st.session_state.state = state_after_bubbles
+            st.session_state.turn_records.append(
+                {
+                    "messages": bubbles_phase["messages"],
+                    "current_state": state_after_bubbles,
+                    "analysis": {},  # факты приедут асинхронно в _pending_extraction
+                }
+            )
+            if is_dialog_closed(st.session_state.state, {}):
                 log_summary(st.session_state.session_id, st.session_state.state)
             st.rerun()
 

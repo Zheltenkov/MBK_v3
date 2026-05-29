@@ -51,7 +51,9 @@ def build_runtime_payload(state: Dict, latest_user_message: str) -> Dict:
     }
 
 
-def apply_updates(state: Dict, state_update: Dict, user_message: str, bubbles: list[str]) -> Dict:
+def _apply_fields(state: Dict, state_update: Dict) -> Dict:
+    """Применяет только factual/routing-обновления, без касания chat_history.
+    Используется медленной фазой (после извлекателя)."""
     new_state = deepcopy(state)
     new_state["current_facts"] = apply_fact_updates(
         state.get("current_facts", {}), state_update.get("fact_updates", [])
@@ -74,13 +76,25 @@ def apply_updates(state: Dict, state_update: Dict, user_message: str, bubbles: l
         if pid and pid not in declined:
             declined.append(pid)
     new_state["declined_products"] = declined
+    return new_state
 
+
+def _apply_history(state: Dict, user_message: str, bubbles: list[str]) -> Dict:
+    """Дописывает реплику клиента и пузыри бота в chat_history, не трогая факты.
+    Используется быстрой фазой (видна пользователю сразу)."""
+    new_state = deepcopy(state)
     history = new_state.setdefault("chat_history", [])
     history.append({"role": "user", "content": user_message})
     for bubble in bubbles:
         history.append({"role": "assistant", "content": bubble})
     new_state["message_count"] = state.get("message_count", 0) + 1
     return new_state
+
+
+def apply_updates(state: Dict, state_update: Dict, user_message: str, bubbles: list[str]) -> Dict:
+    """Совместимый wrapper: применяет и факты, и историю разом."""
+    after_fields = _apply_fields(state, state_update)
+    return _apply_history(after_fields, user_message, bubbles)
 
 
 # --------------------------------------------------------------------------- #
@@ -93,30 +107,58 @@ def stream_reply(state: Dict, user_message: str, config: AppConfig | None = None
     yield from llm_agent.stream_conversation(payload, config)
 
 
-def commit_turn(state: Dict, user_message: str, full_reply: str, config: AppConfig | None = None) -> Dict:
-    """После стрима: разбор в JSON (молча) + применение фактов. Разговор от него не зависит."""
-    config = config or load_config()
-    payload = build_runtime_payload(state, user_message)
+def commit_bubbles_only(state: Dict, user_message: str, full_reply: str) -> Dict:
+    """Быстрая фаза: разбить ответ на пузыри и подшить их в chat_history.
+    Без вызова извлекателя. Возвращает {messages, current_state}.
 
+    Используется UI: после стрима сразу обновляем видимую часть, а извлечение
+    запускаем в фоне (см. finalize_extraction)."""
     bubbles = guard_bubbles(split_bubbles(full_reply)) or [full_reply.strip() or "…"]
+    new_state = _apply_history(state, user_message, bubbles)
+    new_state = _sync_legacy_debug_fields(new_state)
+    return {"messages": bubbles, "current_state": new_state}
+
+
+def finalize_extraction(
+    state_with_bubbles: Dict,
+    user_message: str,
+    full_reply: str,
+    config: AppConfig | None = None,
+) -> Dict:
+    """Медленная фаза: извлекатель + факты + возможная доставка лида.
+    Безопасна к запуску в фоновом потоке. Принимает state, в котором пузыри
+    уже подшиты к chat_history (после commit_bubbles_only)."""
+    config = config or load_config()
+    payload = build_runtime_payload(state_with_bubbles, user_message)
 
     try:
         state_update = llm_agent.extract_state(payload, full_reply, config)
     except Exception:
-        # Извлечение может сбоить (модель/JSON) — это НЕ должно ломать диалог.
-        state_update = {"dialog_phase": state.get("dialog_phase", "qualification")}
+        state_update = {"dialog_phase": state_with_bubbles.get("dialog_phase", "qualification")}
 
-    new_state = apply_updates(state, state_update, user_message, bubbles)
+    new_state = _apply_fields(state_with_bubbles, state_update)
     new_state = _sync_legacy_debug_fields(new_state)
+
+    bubbles = [
+        m["content"]
+        for m in new_state.get("chat_history", [])
+        if m.get("role") == "assistant"
+    ][-4:]
     result = _build_result(bubbles, new_state, state_update, config)
 
-    # Доставка лида (заглушка/вебхук). Срабатывает только при уверенном хендоффе.
     delivery = lead_delivery.maybe_deliver(new_state, result["analysis"])
     if delivery:
         new_state["lead_delivered"] = delivery["lead"]
         new_state["lead_delivery_status"] = delivery["message"]
         result["lead_delivery"] = delivery
+    result["current_state"] = new_state
     return result
+
+
+def commit_turn(state: Dict, user_message: str, full_reply: str, config: AppConfig | None = None) -> Dict:
+    """Синхронный путь: пузыри + извлечение разом. Совместимый вход для не-стримового кода."""
+    bubbles_phase = commit_bubbles_only(state, user_message, full_reply)
+    return finalize_extraction(bubbles_phase["current_state"], user_message, full_reply, config)
 
 
 # --------------------------------------------------------------------------- #
