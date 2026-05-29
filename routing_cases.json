@@ -477,5 +477,92 @@
         "unsecured_loan"
       ]
     }
+  },
+  {
+    "id": "r17_historical_overdue_blocks_unsecured",
+    "label": "Историческая просрочка 2 мес назад → блок беззалога",
+    "facts": {
+      "client": {
+        "age": 35
+      },
+      "request": {
+        "desired_amount": 200000
+      },
+      "debts": {
+        "has_current_overdue": false,
+        "historical_overdue": "была просрочка 2 месяца, погасил полгода назад"
+      },
+      "employment": {
+        "type": "найм",
+        "monthly_income": 90000
+      },
+      "assets": {
+        "type": "Нет активов"
+      }
+    },
+    "user_input": "Полгода назад была просрочка на 2 месяца, давно погасил. Нужно 200к, доход белый 90к.",
+    "expected": {
+      "recommended": null,
+      "not_recommended": [
+        "unsecured_loan",
+        "partner_unsecured"
+      ],
+      "blocked_includes": [
+        "unsecured_loan"
+      ]
+    }
+  },
+  {
+    "id": "r18_bfl_formula_routes_to_restructuring",
+    "label": "Формула: доход 80к, долг 800к, 1 иждивенец → реструктуризация",
+    "facts": {
+      "client": {
+        "age": 38
+      },
+      "debts": {
+        "total": 800000,
+        "has_current_overdue": true
+      },
+      "employment": {
+        "type": "найм",
+        "monthly_income": 80000
+      },
+      "household": {
+        "has_dependents": true,
+        "dependents_count": 1
+      }
+    },
+    "user_input": "Долг 800 тысяч, плачу с трудом. Доход белый 80 000 в месяц, один ребёнок.",
+    "expected": {
+      "recommended": "bfl_restructuring",
+      "blocked_includes": []
+    }
+  },
+  {
+    "id": "r19_bfl_formula_routes_to_realization",
+    "label": "Формула: доход 30к, долг 1.5М, 1 иждивенец → реализация",
+    "facts": {
+      "client": {
+        "age": 42
+      },
+      "debts": {
+        "total": 1500000,
+        "has_current_overdue": true
+      },
+      "employment": {
+        "type": "найм",
+        "monthly_income": 30000
+      },
+      "household": {
+        "has_dependents": true,
+        "dependents_count": 1
+      }
+    },
+    "user_input": "Долг полтора миллиона, доход 30к на руки, ребёнок маленький. Вообще не вытягиваю.",
+    "expected": {
+      "recommended": "bfl_realization",
+      "blocked_includes": []
+    }
   }
 ]
+

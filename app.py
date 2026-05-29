@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hmac
 import json
 import os
 from datetime import datetime
@@ -8,16 +9,14 @@ import streamlit as st
 from dotenv import load_dotenv
 
 import observability
-from config import load_config
 from core import PipelineError, commit_turn, stream_reply
 from logger import log_dialog, log_summary
-from prompts import ASSISTANT_NAME
 from state import init_dialog_state, should_close_dialog
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
-st.set_page_config(page_title="MBK Simple Bot", page_icon="💬", layout="wide")
+st.set_page_config(page_title="MBK assistant", page_icon="💬", layout="centered")
 
 
 def _read_env_value(name: str) -> str | None:
@@ -30,6 +29,34 @@ def require_openrouter_key() -> None:
         st.stop()
 
 
+def require_static_auth() -> None:
+    expected_username = _read_env_value("MBK_AUTH_USERNAME")
+    expected_password = _read_env_value("MBK_AUTH_PASSWORD")
+    if not expected_username or not expected_password:
+        st.error("Не настроены MBK_AUTH_USERNAME и MBK_AUTH_PASSWORD в .env")
+        st.stop()
+
+    if st.session_state.get("auth_ok"):
+        return
+
+    st.title("Ассистент MBK")
+    with st.form("auth_form", clear_on_submit=False):
+        username = st.text_input("Логин")
+        password = st.text_input("Пароль", type="password")
+        submitted = st.form_submit_button("Войти", type="primary", use_container_width=True)
+
+    if submitted:
+        username_ok = hmac.compare_digest(username, expected_username)
+        password_ok = hmac.compare_digest(password, expected_password)
+        if username_ok and password_ok:
+            st.session_state.auth_ok = True
+            st.rerun()
+        st.error("Неверный логин или пароль")
+
+    st.stop()
+
+
+require_static_auth()
 require_openrouter_key()
 
 if "session_id" not in st.session_state:
@@ -78,8 +105,11 @@ def build_dialog_export() -> bytes:
 
 
 with st.sidebar:
-    st.header("MBK Simple Bot")
-    st.caption(f"{ASSISTANT_NAME} • {load_config().model}")
+    st.header("MBK assistant")
+
+    if st.button("Выйти", use_container_width=True):
+        st.session_state.auth_ok = False
+        st.rerun()
 
     if st.button("🔄 Сбросить диалог", use_container_width=True):
         for key in ["state", "anketa", "applied_form", "turn_records"]:
@@ -107,28 +137,25 @@ with st.sidebar:
             living_address = st.text_input("Адрес проживания", key="form_living_address")
 
         st.markdown("**Квалификация**")
-        col1, col2 = st.columns(2)
-        with col1:
-            has_current_loans = st.selectbox(
-                "Есть текущие кредиты или займы?", ["—", "Да", "Нет"], key="form_has_current_loans"
-            )
-            marital_status = st.selectbox(
-                "Семейное положение",
-                ["—", "Женат", "Замужем", "Не женат", "Не замужем", "Холост"],
-                key="form_marital_status",
-            )
-            has_dependents = st.selectbox("Иждивенцы", ["—", "Да", "Нет"], key="form_has_dependents")
-        with col2:
-            employment_type = st.text_input(
-                "Тип занятости (найм / ИП / самозанятый / безработный)", key="form_employment_type"
-            )
-            has_car = st.selectbox("Есть ли в собственности авто?", ["—", "Да", "Нет"], key="form_has_car")
-            rent_expenses = st.number_input(
-                "Расходы на аренду жилья", min_value=0, step=5000, key="form_rent_expenses"
-            )
-            asset_type = st.selectbox(
-                "Тип актива", ["—", "Недвижимость", "Нет активов"], key="form_asset_type"
-            )
+        has_current_loans = st.selectbox(
+            "Есть текущие кредиты или займы?", ["—", "Да", "Нет"], key="form_has_current_loans"
+        )
+        marital_status = st.selectbox(
+            "Семейное положение",
+            ["—", "Женат", "Замужем", "Не женат", "Не замужем", "Холост"],
+            key="form_marital_status",
+        )
+        has_dependents = st.selectbox("Иждивенцы", ["—", "Да", "Нет"], key="form_has_dependents")
+        employment_type = st.text_input(
+            "Тип занятости (найм / ИП / самозанятый / безработный)", key="form_employment_type"
+        )
+        has_car = st.selectbox("Есть ли в собственности авто?", ["—", "Да", "Нет"], key="form_has_car")
+        rent_expenses = st.number_input(
+            "Расходы на аренду жилья", min_value=0, step=5000, key="form_rent_expenses"
+        )
+        asset_type = st.selectbox(
+            "Тип актива", ["—", "Недвижимость", "Нет активов"], key="form_asset_type"
+        )
 
         submitted = st.form_submit_button(
             "Запустить чат по анкете", type="primary", use_container_width=True
@@ -158,7 +185,7 @@ with st.sidebar:
         st.success("✅ Анкета применена. Диалог запущен.")
         st.rerun()
 
-st.title("💬 MBK — Простой помощник")
+st.title("💬 Ассистент MBK")
 
 if not st.session_state.get("state"):
     st.info("← Заполните анкету в боковой панели и нажмите «Запустить чат по анкете»")
@@ -173,7 +200,7 @@ else:
     dialog_closed = is_dialog_closed(current_state, last_analysis)
 
     for msg in chat:
-        with st.chat_message(msg["role"]):
+        with st.chat_message(msg["role"], avatar="💬" if msg["role"] == "assistant" else None):
             st.markdown(msg["content"])
 
     if current_state.get("lead_delivered"):
@@ -182,7 +209,7 @@ else:
     if dialog_closed:
         st.success(f"Диалог завершён. Сценарий: {current_state.get('selected_case') or 'не выбран'}.")
     else:
-        user_input = st.chat_input("Сообщение клиента...")
+        user_input = st.chat_input("Напишите сообщение клиенту...")
         if user_input:
             with st.chat_message("user"):
                 st.markdown(user_input)
@@ -193,9 +220,11 @@ else:
                     current_facts=current_state.get("current_facts"),
                     anketa=st.session_state.get("anketa"),
                 ) as turn_span:
-                    with st.chat_message("assistant"):
+                    with st.chat_message("assistant", avatar="💬"):
                         full_reply = st.write_stream(stream_reply(current_state, user_input))
-                    result = commit_turn(current_state, user_input, full_reply)
+                    with st.status("💾 Передаю в работу...", expanded=False) as status:
+                        result = commit_turn(current_state, user_input, full_reply)
+                        status.update(label="✓ Готово", state="complete")
                     observability.finalize_turn(
                         turn_span,
                         output={
@@ -218,10 +247,6 @@ else:
             if is_dialog_closed(st.session_state.state, result.get("analysis", {})):
                 log_summary(st.session_state.session_id, st.session_state.state)
             st.rerun()
-
-with st.expander("Текущее состояние (debug)", expanded=False):
-    if st.session_state.get("state"):
-        st.json(get_debug_state())
 
 st.download_button(
     "⬇️ Скачать диалог и состояние",

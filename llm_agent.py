@@ -14,6 +14,7 @@ from prompts import (
     CONVERSATION_SYSTEM_PROMPT,
     EXTRACTION_SYSTEM_PROMPT,
     STYLE_EXAMPLES,
+    relevant_product_knowledge,
 )
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -56,6 +57,14 @@ def _context_block(payload: dict[str, Any]) -> str:
     declined = payload.get("declined_products") or []
     if declined:
         parts.append("Клиент уже отказался от вариантов (НЕ предлагай их снова): " + ", ".join(declined))
+    delivered = payload.get("lead_delivered")
+    if delivered:
+        label = delivered.get("product_label") or delivered.get("product_id") or "—"
+        parts.append(
+            f"ВАЖНО: лид по направлению «{label}» уже передан специалисту в этой сессии. "
+            "НЕ начинай новую квалификацию под другой продукт. Отвечай на вопросы клиента "
+            "и направляй к ожиданию специалиста."
+        )
     return "\n\n".join(parts)
 
 
@@ -70,8 +79,13 @@ def _history_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _conversation_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
+    knowledge = relevant_product_knowledge(
+        payload.get("current_facts") or {},
+        str(payload.get("latest_user_message") or ""),
+    )
     return [
         {"role": "system", "content": CONVERSATION_SYSTEM_PROMPT + "\n\n" + STYLE_EXAMPLES},
+        {"role": "system", "content": knowledge},
         {"role": "system", "content": _context_block(payload)},
         *_history_messages(payload),
         {"role": "user", "content": str(payload.get("latest_user_message", ""))},
@@ -249,6 +263,78 @@ def _sanitize_state_update_payload(value: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        normalized = re.sub(r"[^\d,.\-]", "", value).replace(",", ".")
+        try:
+            return float(normalized) if normalized else None
+        except ValueError:
+            return None
+    return None
+
+
+def _dependent_count(household: dict[str, Any]) -> int:
+    raw_count = household.get("dependents_count")
+    if isinstance(raw_count, bool):
+        return 0
+    if isinstance(raw_count, (int, float)):
+        return max(0, int(raw_count))
+    return 1 if household.get("has_dependents") is True else 0
+
+
+def _mentions_debt_distress(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
+    debts = facts.get("debts") if isinstance(facts.get("debts"), dict) else {}
+    if debts.get("has_current_overdue") is True:
+        return True
+    text = str(payload.get("latest_user_message") or "").lower()
+    markers = ("долг", "просроч", "плачу с трудом", "не вытяг", "кредитор", "банкрот", "реструктур")
+    return any(marker in text for marker in markers)
+
+
+def _apply_deterministic_fit_overrides(state_update: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply deterministic product-fit facts that should not depend on LLM discretion."""
+    facts = payload.get("current_facts") if isinstance(payload.get("current_facts"), dict) else {}
+    debts = facts.get("debts") if isinstance(facts.get("debts"), dict) else {}
+    employment = facts.get("employment") if isinstance(facts.get("employment"), dict) else {}
+    household = facts.get("household") if isinstance(facts.get("household"), dict) else {}
+
+    debt_total = _as_float(debts.get("total"))
+    monthly_income = _as_float(employment.get("monthly_income") or employment.get("income"))
+    if debt_total is None or monthly_income is None or debt_total < 300_000:
+        return state_update
+    if not _mentions_debt_distress(payload, facts):
+        return state_update
+
+    pfr = state_update.get("product_fit_result") or {}
+    current_rec = pfr.get("recommended_product_id")
+    if current_rec not in (None, "", "bfl_realization", "bfl_restructuring"):
+        return state_update
+
+    dependents = _dependent_count(household)
+    plan_capacity = (monthly_income - 20_000 - 15_000 * dependents) * 60 * 0.7
+    target = "bfl_restructuring" if plan_capacity > debt_total else "bfl_realization"
+    declined = set(payload.get("declined_products") or []) | set(state_update.get("declined_products") or [])
+    if target in declined:
+        return state_update
+
+    pfr["recommended_product_id"] = target
+    eligible = list(pfr.get("eligible_products") or [])
+    if target not in eligible:
+        eligible.append(target)
+    pfr["eligible_products"] = eligible
+    pfr.setdefault("blocked_products", [])
+    pfr.setdefault("missing_facts", [])
+    pfr["handoff_required"] = pfr.get("handoff_required", False)
+    state_update["product_fit_result"] = pfr
+    if not state_update.get("dialog_phase") or state_update.get("dialog_phase") == "qualification":
+        state_update["dialog_phase"] = "product_fit"
+    return state_update
+
+
 def extract_state(payload: dict[str, Any], assistant_reply: str, config: AppConfig) -> dict[str, Any]:
     extractor_model = config.extractor_model or config.model
     user_content = (
@@ -288,6 +374,7 @@ def extract_state(payload: dict[str, Any], assistant_reply: str, config: AppConf
         try:
             parsed = _extract_json(str(content))
             validated = StateUpdate.model_validate(_sanitize_state_update_payload(parsed)).model_dump()
+            validated = _apply_deterministic_fit_overrides(validated, payload)
         except Exception as exc:
             observability.finalize_generation(gen, output=str(content), error=f"validate: {exc}")
             raise

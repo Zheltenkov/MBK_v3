@@ -47,6 +47,7 @@ def build_runtime_payload(state: Dict, latest_user_message: str) -> Dict:
         "latest_user_message": latest_user_message,
         "business_rules_summary": BUSINESS_RULES_SUMMARY,
         "declined_products": state.get("declined_products", []),
+        "lead_delivered": state.get("lead_delivered"),
     }
 
 
