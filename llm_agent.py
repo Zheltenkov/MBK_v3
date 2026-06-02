@@ -5,7 +5,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import observability
 from assistant_contracts import FactUpdate, ProductFitResult, StateUpdate, StatusUpdate, TargetCompletion
@@ -92,6 +92,32 @@ def _conversation_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
+def _opening_messages(payload: dict[str, Any], has_anketa: bool) -> list[dict[str, str]]:
+    """Сборка сообщений для авто-старта: реплики клиента ещё нет, вместо неё — внутренняя
+    подсказка о том, что клиент только что подключился."""
+    facts = payload.get("current_facts") or {}
+    knowledge = relevant_product_knowledge(facts, "")
+    if has_anketa:
+        hint = (
+            "Клиент только что прислал анкету и впервые открыл чат. Начни разговор первым: "
+            "коротко поздоровайся по имени из анкеты, обозначь себя (Олег, специалист МБК), "
+            "одной фразой подведи, что видишь в заявке, и задай первый по сути уточняющий вопрос, "
+            "который реально продвинет к маршруту. Без длинных вступлений. 1–3 коротких сообщения."
+        )
+    else:
+        hint = (
+            "Клиент только что открыл чат, анкеты нет. Начни разговор первым: коротко поздоровайся, "
+            "представься (Олег, специалист МБК) и задай открытый вопрос — что привело и какая сумма. "
+            "Без длинных вступлений. 1–2 коротких сообщения."
+        )
+    return [
+        {"role": "system", "content": CONVERSATION_SYSTEM_PROMPT + "\n\n" + STYLE_EXAMPLES},
+        {"role": "system", "content": knowledge},
+        {"role": "system", "content": _context_block(payload)},
+        {"role": "system", "content": hint},
+    ]
+
+
 def _post(config: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     last_error: Exception | None = None
@@ -140,8 +166,65 @@ def _post_stream(
                 yield piece
 
 
-def stream_conversation(payload: dict[str, Any], config: AppConfig) -> Iterator[str]:
-    """Живой ответ токен за токеном. Каждый вызов трассируется как Langfuse generation."""
+def stream_opening(
+    payload: dict[str, Any],
+    config: AppConfig,
+    has_anketa: bool,
+    usage_collector: Callable[[str, int, int], None] | None = None,
+) -> Iterator[str]:
+    """Авто-старт диалога: бот первым обращается к клиенту. С анкетой — приветствие по имени
+    и квалифицирующий вопрос; без анкеты — открытый «что привело»."""
+    messages = _opening_messages(payload, has_anketa=has_anketa)
+    body: dict[str, Any] = {
+        "model": config.model,
+        "messages": messages,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+        "stream_options": {"include_usage": True},
+    }
+    _maybe_suppress_reasoning(body, config.model)
+
+    usage_sink: dict = {}
+    collected: list[str] = []
+    err: str | None = None
+    with observability.generation(
+        name="opening",
+        model=config.model,
+        input_messages=messages,
+        model_parameters={"temperature": config.temperature, "max_tokens": config.max_tokens, "stream": True},
+    ) as gen:
+        try:
+            for piece in _post_stream(config, body, usage_sink):
+                collected.append(piece)
+                yield piece
+        except BaseException as exc:  # noqa: BLE001
+            err = repr(exc)
+            raise
+        finally:
+            observability.finalize_generation(
+                gen, output="".join(collected),
+                usage=observability.usage_from_openrouter(usage_sink),
+                error=err,
+            )
+            if usage_collector and usage_sink:
+                try:
+                    usage_collector(
+                        config.model,
+                        int(usage_sink.get("prompt_tokens", 0) or 0),
+                        int(usage_sink.get("completion_tokens", 0) or 0),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+
+def stream_conversation(
+    payload: dict[str, Any],
+    config: AppConfig,
+    usage_collector: Callable[[str, int, int], None] | None = None,
+) -> Iterator[str]:
+    """Живой ответ токен за токеном. Каждый вызов трассируется как Langfuse generation.
+    Если задан usage_collector(model, prompt_tokens, completion_tokens) — вызывается
+    после стрима с финальным usage из OpenRouter (когда тот пришёл)."""
     messages = _conversation_messages(payload)
     body: dict[str, Any] = {
         "model": config.model,
@@ -179,6 +262,15 @@ def stream_conversation(payload: dict[str, Any], config: AppConfig) -> Iterator[
                 usage=observability.usage_from_openrouter(usage_sink),
                 error=err,
             )
+            if usage_collector and usage_sink:
+                try:
+                    usage_collector(
+                        config.model,
+                        int(usage_sink.get("prompt_tokens", 0) or 0),
+                        int(usage_sink.get("completion_tokens", 0) or 0),
+                    )
+                except Exception:  # noqa: BLE001 — учёт не должен валить пайплайн
+                    pass
 
 
 def generate_reply(payload: dict[str, Any], config: AppConfig) -> str:
@@ -335,7 +427,12 @@ def _apply_deterministic_fit_overrides(state_update: dict[str, Any], payload: di
     return state_update
 
 
-def extract_state(payload: dict[str, Any], assistant_reply: str, config: AppConfig) -> dict[str, Any]:
+def extract_state(
+    payload: dict[str, Any],
+    assistant_reply: str,
+    config: AppConfig,
+    usage_collector: Callable[[str, int, int], None] | None = None,
+) -> dict[str, Any]:
     extractor_model = config.extractor_model or config.model
     user_content = (
         f"{_context_block(payload)}\n\n"
@@ -367,6 +464,16 @@ def extract_state(payload: dict[str, Any], assistant_reply: str, config: AppConf
         except Exception as exc:
             observability.finalize_generation(gen, error=repr(exc))
             raise
+        usage = data.get("usage") or {}
+        if usage_collector and usage:
+            try:
+                usage_collector(
+                    extractor_model,
+                    int(usage.get("prompt_tokens", 0) or 0),
+                    int(usage.get("completion_tokens", 0) or 0),
+                )
+            except Exception:  # noqa: BLE001
+                pass
         content = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
         if not content:
             observability.finalize_generation(gen, error="empty extractor content")
@@ -381,6 +488,6 @@ def extract_state(payload: dict[str, Any], assistant_reply: str, config: AppConf
         observability.finalize_generation(
             gen,
             output=validated,
-            usage=observability.usage_from_openrouter(data.get("usage")),
+            usage=observability.usage_from_openrouter(usage),
         )
         return validated

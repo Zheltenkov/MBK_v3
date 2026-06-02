@@ -1,7 +1,12 @@
 python-dotenv==1.2.2
-streamlit==1.55.0
 pydantic==2.9.2
 pytest==8.4.2
+# Backend (production): FastAPI + uvicorn + SSE streaming
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+sse-starlette==2.1.3
 # Observability — необязательно. Если не нужен трейсинг, можно убрать.
 # При отсутствии LANGFUSE_*-ключей модуль observability работает как no-op.
 langfuse>=3.0.0,<4.0.0
+# Legacy UI (Streamlit) — оставлен для бэкап-прогонов, не деплоится в проде.
+streamlit==1.55.0

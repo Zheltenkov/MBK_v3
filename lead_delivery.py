@@ -38,10 +38,34 @@ def _product_id(state: dict, analysis: dict) -> str | None:
     )
 
 
+REQUIRED_CONTACT_FIELDS = [
+    ("client", "full_name"),
+    ("client", "phone"),
+    ("client", "birth_date"),
+    ("request", "desired_amount"),
+]
+
+
+def _has_required_contacts(state: dict) -> tuple[bool, list[str]]:
+    """Hard-gate: даже если извлекатель не упомянул missing_facts, не выпускаем лид
+    без минимума контактов. Критично для discovery-режима (без анкеты) — там фронт
+    эти поля не собирает, бот должен спросить их в разговоре."""
+    facts = state.get("current_facts") or {}
+    missing: list[str] = []
+    for group, key in REQUIRED_CONTACT_FIELDS:
+        value = (facts.get(group) or {}).get(key) if isinstance(facts.get(group), dict) else None
+        if value in (None, "", 0):
+            missing.append(f"{group}.{key}")
+    return (not missing), missing
+
+
 def should_deliver(state: dict, analysis: dict) -> bool:
     """Передаём лид, только если: ещё не передавали, есть понятный продукт,
     извлекатель сигналит хендофф/целевое завершение и нет недостающих фактов."""
     if state.get("lead_delivered"):
+        return False
+    contacts_ok, _ = _has_required_contacts(state)
+    if not contacts_ok:
         return False
     pfr = analysis.get("product_fit_result") or {}
     phase = analysis.get("dialog_phase")

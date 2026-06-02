@@ -17,7 +17,7 @@ class AppConfig:
 
     openrouter_api_key: str
     # Разговорная модель (видит клиент). Лучше быструю чат-модель, НЕ reasoning.
-    model: str = "qwen/qwen3.6-plus"
+    model: str = "qwen/qwen3.7-max"
     # Молчаливый извлекатель JSON. Если пусто — берём ту же модель.
     extractor_model: str | None = None
     temperature: float = 0.7
