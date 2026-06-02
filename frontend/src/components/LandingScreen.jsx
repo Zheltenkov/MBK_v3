@@ -4,12 +4,8 @@ export default function LandingScreen({ onChooseAnketa, onSkipAnketa, error }) {
       <div className="mx-auto max-w-2xl px-4 py-10 sm:py-16">
         <div className="text-center">
           <h1 className="text-2xl sm:text-3xl font-semibold text-slate-900">
-            Здравствуйте! Я Олег, помогу с кредитом или долгами.
+            Ассистент МБК
           </h1>
-          <p className="mt-3 text-slate-600">
-            Подскажу рабочий вариант под вашу ситуацию: залог недвижимости, ПТС,
-            беззалоговый кредит или банкротство. Выбирайте, как удобнее начать.
-          </p>
         </div>
 
         {error && (
