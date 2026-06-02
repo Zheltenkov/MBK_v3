@@ -39,7 +39,7 @@ def load_config() -> AppConfig:
 
     return AppConfig(
         openrouter_api_key=key,
-        model=_read_env_value("OPENROUTER_MODEL") or "qwen/qwen3.6-plus",
+        model=_read_env_value("OPENROUTER_MODEL") or "qwen/qwen3.7-max",
         extractor_model=_read_env_value("OPENROUTER_EXTRACTOR_MODEL"),
         temperature=float(_read_env_value("OPENROUTER_TEMPERATURE") or 0.7),
         max_tokens=int(_read_env_value("OPENROUTER_MAX_TOKENS") or 5000),
