@@ -7,6 +7,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Iterator
 
+from pydantic import ValidationError
+
 import observability
 from assistant_contracts import FactUpdate, ProductFitResult, StateUpdate, StatusUpdate, TargetCompletion
 from config import AppConfig
@@ -76,6 +78,51 @@ def _history_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
         if content:
             msgs.append({"role": role, "content": content})
     return msgs
+
+
+def _cached_tokens(usage: dict) -> int:
+    """Достаёт cached_tokens из usage OpenRouter (prompt_tokens_details.cached_tokens)."""
+    if not isinstance(usage, dict):
+        return 0
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        return int(details.get("cached_tokens", 0) or 0)
+    # некоторые провайдеры кладут плоско
+    return int(usage.get("cached_tokens", 0) or 0)
+
+
+def _apply_cache_control(messages: list[dict[str, Any]], enable: bool) -> list[dict[str, Any]]:
+    """Размечает статический префикс cache_control-брейкпоинтами (синтаксис Anthropic/Alibaba).
+
+    Ставим до 2 точек кэша:
+      - на первый system-блок (персона + few-shots) — байт-в-байт каждый ход, всегда хит;
+      - на второй system-блок (релевантные знания) — стабилен в рамках обсуждения одного
+        продукта, хит при повторе.
+    Динамический блок фактов (третий system) и история не кэшируются — они меняются.
+
+    Если провайдер не поддерживает cache_control — поле просто игнорируется, запрос валиден.
+    """
+    if not enable:
+        return messages
+    out: list[dict[str, Any]] = []
+    system_seen = 0
+    for m in messages:
+        # Кэшируем только первые ДВА system-сообщения (персона+few-shots, затем знания).
+        if m.get("role") == "system" and system_seen < 2 and isinstance(m.get("content"), str):
+            system_seen += 1
+            out.append({
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": m["content"],
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            })
+        else:
+            out.append(m)
+    return out
 
 
 def _conversation_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -174,7 +221,7 @@ def stream_opening(
 ) -> Iterator[str]:
     """Авто-старт диалога: бот первым обращается к клиенту. С анкетой — приветствие по имени
     и квалифицирующий вопрос; без анкеты — открытый «что привело»."""
-    messages = _opening_messages(payload, has_anketa=has_anketa)
+    messages = _apply_cache_control(_opening_messages(payload, has_anketa=has_anketa), config.enable_prompt_cache)
     body: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
@@ -212,6 +259,7 @@ def stream_opening(
                         config.model,
                         int(usage_sink.get("prompt_tokens", 0) or 0),
                         int(usage_sink.get("completion_tokens", 0) or 0),
+                        _cached_tokens(usage_sink),
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -225,7 +273,7 @@ def stream_conversation(
     """Живой ответ токен за токеном. Каждый вызов трассируется как Langfuse generation.
     Если задан usage_collector(model, prompt_tokens, completion_tokens) — вызывается
     после стрима с финальным usage из OpenRouter (когда тот пришёл)."""
-    messages = _conversation_messages(payload)
+    messages = _apply_cache_control(_conversation_messages(payload), config.enable_prompt_cache)
     body: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
@@ -268,6 +316,7 @@ def stream_conversation(
                         config.model,
                         int(usage_sink.get("prompt_tokens", 0) or 0),
                         int(usage_sink.get("completion_tokens", 0) or 0),
+                        _cached_tokens(usage_sink),
                     )
                 except Exception:  # noqa: BLE001 — учёт не должен валить пайплайн
                     pass
@@ -427,23 +476,19 @@ def _apply_deterministic_fit_overrides(state_update: dict[str, Any], payload: di
     return state_update
 
 
-def extract_state(
+EXTRACTOR_MAX_ATTEMPTS = 2
+
+
+def _extract_state_attempt(
     payload: dict[str, Any],
-    assistant_reply: str,
     config: AppConfig,
-    usage_collector: Callable[[str, int, int], None] | None = None,
+    extractor_model: str,
+    messages: list[dict[str, str]],
+    usage_collector: Callable[[str, int, int], None] | None,
+    attempt: int,
 ) -> dict[str, Any]:
-    extractor_model = config.extractor_model or config.model
-    user_content = (
-        f"{_context_block(payload)}\n\n"
-        f"Последняя реплика клиента:\n{payload.get('latest_user_message', '')}\n\n"
-        f"Ответ оператора:\n{assistant_reply}\n\n"
-        "Верни только JSON-объект StateUpdate."
-    )
-    messages = [
-        {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
+    """Одна попытка извлечения. Возвращает validated dict либо бросает исключение —
+    дальше driver решает, повторять или сдаваться."""
     body: dict[str, Any] = {
         "model": extractor_model,
         "messages": messages,
@@ -453,8 +498,9 @@ def extract_state(
     }
     _maybe_suppress_reasoning(body, extractor_model)
 
+    span_name = "extraction" if attempt == 1 else f"extraction_retry_{attempt}"
     with observability.generation(
-        name="extraction",
+        name=span_name,
         model=extractor_model,
         input_messages=messages,
         model_parameters={"temperature": 0.0, "max_tokens": 900, "response_format": "json_object"},
@@ -471,6 +517,7 @@ def extract_state(
                     extractor_model,
                     int(usage.get("prompt_tokens", 0) or 0),
                     int(usage.get("completion_tokens", 0) or 0),
+                    _cached_tokens(usage),
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -491,3 +538,64 @@ def extract_state(
             usage=observability.usage_from_openrouter(usage),
         )
         return validated
+
+
+def extract_state(
+    payload: dict[str, Any],
+    assistant_reply: str,
+    config: AppConfig,
+    usage_collector: Callable[[str, int, int], None] | None = None,
+) -> dict[str, Any]:
+    """Извлекатель JSON с повторной попыткой на синтаксическом сбое.
+
+    Эмпирика прода/эвалов: на длинных reasoning-выходах ~5% попыток возвращают
+    JSON с пропущенной запятой или незакрытой скобкой. Repair-слой Pydantic
+    срабатывает уже на распарсенном dict — на синтаксисе ему делать нечего.
+    Поэтому на сбое парсинга/валидации делаем ещё одну попытку с явным
+    усилением требования по формату.
+    """
+    extractor_model = config.extractor_model or config.model
+    base_user_content = (
+        f"{_context_block(payload)}\n\n"
+        f"Последняя реплика клиента:\n{payload.get('latest_user_message', '')}\n\n"
+        f"Ответ оператора:\n{assistant_reply}\n\n"
+        "Верни только JSON-объект StateUpdate."
+    )
+
+    last_error: Exception | None = None
+    for attempt in range(1, EXTRACTOR_MAX_ATTEMPTS + 1):
+        if attempt == 1:
+            user_content = base_user_content
+        else:
+            user_content = (
+                base_user_content
+                + "\n\nКРИТИЧНО: предыдущий ответ был с синтаксически невалидным JSON "
+                  "(пропущенная запятая, незакрытая скобка или лишний текст вокруг). "
+                  "Верни СТРОГО валидный JSON-объект — без markdown-обёртки, без комментариев, "
+                  "со всеми запятыми. Никакого текста до или после JSON."
+            )
+        messages = [
+            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        try:
+            return _extract_state_attempt(
+                payload=payload,
+                config=config,
+                extractor_model=extractor_model,
+                messages=messages,
+                usage_collector=usage_collector,
+                attempt=attempt,
+            )
+        except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+            # JSON-парс / pydantic-валидация / «не объект» — повторяем с усиленным hint.
+            last_error = exc
+            if attempt >= EXTRACTOR_MAX_ATTEMPTS:
+                break
+        except RuntimeError as exc:
+            # «empty extractor content» — тоже стоит повторить.
+            last_error = exc
+            if "empty extractor" not in str(exc) or attempt >= EXTRACTOR_MAX_ATTEMPTS:
+                raise
+    assert last_error is not None
+    raise last_error

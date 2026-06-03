@@ -13,6 +13,8 @@ mikhail_eval_cases.json.
   OPENROUTER_API_KEY=... python run_eval.py gen --model openai/gpt-4o-mini [--n 40]
       Генерит ответы бота вашим системным промптом через OpenRouter и сравнивает балл
       с эталоном. Прогоните на 2-3 моделях — увидите, какая ближе к Михаилу.
+      Полный быстрый прогон: --concurrency 4..8 --retries 1 --timeout 45 --max-tokens 350.
+      Каждый кейс пишется в JSONL сразу; повторный запуск продолжит с готовых кейсов.
 
   ... --judge openai/gpt-4o   (доп. к gen)
       LLM-судья сравнивает кандидата с эталоном вслепую: «кто звучит как живой занятой
@@ -23,16 +25,47 @@ import argparse, json, os, re, sys, time, urllib.error, urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from statistics import mean
+from threading import Lock
 
 from dotenv import load_dotenv
 
 HERE = Path(__file__).resolve().parent
 CASES = json.loads((HERE / "mikhail_eval_cases.json").read_text(encoding="utf-8"))
+
+
+def load_env_file(path: Path, override: bool = False) -> None:
+    """Load simple KEY=VALUE .env files, including UTF-8 BOM files that python-dotenv may skip."""
+    if not path.exists():
+        return
+    text: str | None = None
+    for encoding in ("utf-8-sig", "utf-8", "utf-16"):
+        try:
+            text = path.read_text(encoding=encoding)
+            break
+        except UnicodeError:
+            continue
+    if text is None:
+        return
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip().strip('"').strip("'")
+        if not name or (not override and os.getenv(name) is not None):
+            continue
+        os.environ[name] = value
+
+
 load_dotenv(HERE / ".env")
+load_env_file(HERE / ".env")
 
 DEFAULT_MODELS = {
     "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
     "qwen3.6-plus": "qwen/qwen3.6-plus",
+    "qwen3.7-max": "qwen/qwen3.7-max",
     "opus-4.7": "anthropic/claude-opus-4.7",
     "grok-4.3": "x-ai/grok-4.3",
 }
@@ -44,6 +77,9 @@ MODEL_ALIASES = {
     "qwen3.6 plus": DEFAULT_MODELS["qwen3.6-plus"],
     "qwen3.6-plus": DEFAULT_MODELS["qwen3.6-plus"],
     "qwen/qwen3.6-plus": DEFAULT_MODELS["qwen3.6-plus"],
+    "qwen3.7 max": DEFAULT_MODELS["qwen3.7-max"],
+    "qwen3.7-max": DEFAULT_MODELS["qwen3.7-max"],
+    "qwen/qwen3.7-max": DEFAULT_MODELS["qwen3.7-max"],
     "opus 4.7": DEFAULT_MODELS["opus-4.7"],
     "claude opus 4.7": DEFAULT_MODELS["opus-4.7"],
     "opus-4.7": DEFAULT_MODELS["opus-4.7"],
@@ -137,16 +173,13 @@ def resolve_model_id(model: str) -> str:
 
 
 def openrouter_chat(model: str, messages: list[dict], temperature: float = 0.7,
-                    max_tokens: int = 700, retries: int = 3) -> str:
+                    max_tokens: int = 700, retries: int = 3, timeout: int = 90) -> str:
     key = get_openrouter_api_key()
     payload = {
         "model": model, "messages": messages,
         "temperature": temperature,
         "max_tokens": max(max_tokens, 1800) if model.startswith("deepseek/deepseek-v4") else max_tokens,
     }
-    if model.startswith("deepseek/deepseek-v4"):
-        payload["reasoning"] = {"effort": "none", "exclude": True}
-        payload["include_reasoning"] = False
     body = json.dumps(payload).encode("utf-8")
     last_error: Exception | None = None
 
@@ -161,7 +194,7 @@ def openrouter_chat(model: str, messages: list[dict], temperature: float = 0.7,
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=90) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 data = json.loads(r.read())
             choice = data["choices"][0]
             message = choice.get("message") or {}
@@ -221,30 +254,162 @@ JUDGE_SYS = ("Ты оцениваешь два ответа поддержки �
              "ЖИВОЙ занятой специалист (коротко, прямо, по делу, с мнением), а не как бот/анкета? "
              "Ответь одним словом: A или B.")
 
-def judge(model: str, user_input: str, a: list[str], b: list[str]) -> str:
+def judge(
+    model: str,
+    user_input: str,
+    a: list[str],
+    b: list[str],
+    retries: int = 3,
+    timeout: int = 90,
+) -> str:
     prompt = (f"Сообщение клиента: {user_input}\n\n"
               f"Ответ A:\n" + "\n".join(a) + "\n\nОтвет B:\n" + "\n".join(b))
     out = openrouter_chat(model, [{"role": "system", "content": JUDGE_SYS},
                                   {"role": "user", "content": prompt}],
-                          temperature=0, max_tokens=16)
+                          temperature=0, max_tokens=16, retries=retries, timeout=timeout)
     return "A" if "a" in out.lower()[:3] else "B"
+
+
+def _case_id(index: int, case: dict) -> str:
+    return str(case.get("id") or index)
+
+
+def _load_resume_records(jsonl_path: Path | None, model: str, cases: list[dict]) -> dict[str, dict]:
+    """Load successful case records for the current model so interrupted evals can resume."""
+    if jsonl_path is None or not jsonl_path.exists():
+        return {}
+
+    wanted = {_case_id(i, c) for i, c in enumerate(cases, 1)}
+    records: dict[str, dict] = {}
+    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        case_id = str(record.get("case_id") or "")
+        if (
+            record.get("status") == "ok"
+            and record.get("model") == model
+            and case_id in wanted
+        ):
+            records[case_id] = record
+    return records
+
+
+def _append_jsonl(jsonl_path: Path | None, record: dict, lock: Lock) -> None:
+    if jsonl_path is None:
+        return
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+    with lock:
+        with jsonl_path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+
+def _make_success_record(
+    *,
+    label: str,
+    model: str,
+    index: int,
+    case: dict,
+    candidate: list[str],
+    candidate_score: int,
+    reference_score: int,
+    reasons: list[str],
+    judge_candidate_win: bool | None,
+    latency_sec: float,
+    args: argparse.Namespace,
+) -> dict:
+    return {
+        "status": "ok",
+        "label": label,
+        "model": model,
+        "case_id": _case_id(index, case),
+        "index": index,
+        "candidate_bubbles": candidate,
+        "candidate_score": candidate_score,
+        "reference_score": reference_score,
+        "reasons": reasons,
+        "judge_candidate_win": judge_candidate_win,
+        "latency_sec": round(latency_sec, 3),
+        "temperature": args.temperature,
+        "max_tokens": args.max_tokens,
+        "timeout": args.timeout,
+        "created_at": int(time.time()),
+    }
+
+
+def _make_failure_record(
+    *,
+    label: str,
+    model: str,
+    index: int,
+    case: dict,
+    error: Exception,
+    latency_sec: float,
+    args: argparse.Namespace,
+) -> dict:
+    return {
+        "status": "error",
+        "label": label,
+        "model": model,
+        "case_id": _case_id(index, case),
+        "index": index,
+        "error": str(error),
+        "latency_sec": round(latency_sec, 3),
+        "temperature": args.temperature,
+        "max_tokens": args.max_tokens,
+        "timeout": args.timeout,
+        "created_at": int(time.time()),
+    }
 
 
 def run_generation(model: str, cases: list[dict], args: argparse.Namespace, system_prompt: str) -> dict:
     resolved_model = resolve_model_id(model)
-    cand_scores, ref_scores, judge_wins, judged, failures = [], [], 0, 0, []
+    cand_scores, ref_scores, judge_wins, judged, failures, latencies = [], [], 0, 0, [], []
     consecutive_failures = 0
+    jsonl_path = getattr(args, "jsonl_path", None)
+    jsonl_lock = Lock()
 
     print(f"\n=== {model} -> {resolved_model} ===")
 
-    if args.concurrency > 1:
-        def run_one(index_case: tuple[int, dict]) -> dict:
-            i, c = index_case
+    resume_records = {} if args.no_resume else _load_resume_records(jsonl_path, resolved_model, cases)
+    if resume_records:
+        for i, c in enumerate(cases, 1):
+            record = resume_records.get(_case_id(i, c))
+            if not record:
+                continue
+            cand_scores.append(record["candidate_score"])
+            ref_scores.append(record["reference_score"])
+            if record.get("latency_sec") is not None:
+                latencies.append(float(record["latency_sec"]))
+            if record.get("judge_candidate_win") is not None:
+                judged += 1
+                if record["judge_candidate_win"]:
+                    judge_wins += 1
+        print(f"  resume: найдено готовых кейсов {len(resume_records)}/{len(cases)}")
+
+    pending_cases = [
+        (i, c)
+        for i, c in enumerate(cases, 1)
+        if _case_id(i, c) not in resume_records
+    ]
+    if not pending_cases:
+        print("  все кейсы уже есть в JSONL, генерация не нужна")
+
+    def run_one(index_case: tuple[int, dict]) -> dict:
+        i, c = index_case
+        started = time.perf_counter()
+        try:
             raw = openrouter_chat(
                 resolved_model,
                 build_messages(system_prompt, c),
                 args.temperature,
+                max_tokens=args.max_tokens,
                 retries=args.retries,
+                timeout=args.timeout,
             )
             cand = parse_bubbles(raw)
             cs, reasons = heuristic_score(cand)
@@ -254,95 +419,120 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
                 # Детерминированно чередуем порядок, чтобы параллельный прогон был воспроизводимым.
                 cand_is_a = i % 2 == 1
                 if cand_is_a:
-                    w = judge(args.judge, c["user_input"], cand, c["reference_bubbles"])
+                    w = judge(
+                        args.judge,
+                        c["user_input"],
+                        cand,
+                        c["reference_bubbles"],
+                        retries=args.retries,
+                        timeout=args.timeout,
+                    )
                 else:
-                    w = judge(args.judge, c["user_input"], c["reference_bubbles"], cand)
+                    w = judge(
+                        args.judge,
+                        c["user_input"],
+                        c["reference_bubbles"],
+                        cand,
+                        retries=args.retries,
+                        timeout=args.timeout,
+                    )
                 judge_candidate_win = (w == "A") == cand_is_a
-            return {
-                "index": i,
-                "case": c,
-                "candidate": cand,
-                "candidate_score": cs,
-                "reference_score": rs,
-                "reasons": reasons,
-                "judge_candidate_win": judge_candidate_win,
-            }
+            latency_sec = time.perf_counter() - started
+            return _make_success_record(
+                label=model,
+                model=resolved_model,
+                index=i,
+                case=c,
+                candidate=cand,
+                candidate_score=cs,
+                reference_score=rs,
+                reasons=reasons,
+                judge_candidate_win=judge_candidate_win,
+                latency_sec=latency_sec,
+                args=args,
+            )
+        except Exception as e:
+            latency_sec = time.perf_counter() - started
+            return _make_failure_record(
+                label=model,
+                model=resolved_model,
+                index=i,
+                case=c,
+                error=e,
+                latency_sec=latency_sec,
+                args=args,
+            )
 
-        completed = []
+    if args.concurrency > 1:
         with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
             futures = {
                 executor.submit(run_one, (i, c)): (i, c)
-                for i, c in enumerate(cases, 1)
+                for i, c in pending_cases
             }
             for future in as_completed(futures):
                 i, c = futures[future]
-                try:
-                    item = future.result()
-                    completed.append(item)
-                except Exception as e:
-                    failures.append({"case_id": c.get("id"), "error": str(e)})
-                    print(f"  [{i}/{len(cases)}] ошибка генерации: {e}")
+                item = future.result()
+                _append_jsonl(jsonl_path, item, jsonl_lock)
+
+                if item["status"] == "error":
+                    failures.append({"case_id": item["case_id"], "error": item["error"], "latency_sec": item["latency_sec"]})
+                    print(f"  [{i}/{len(cases)}] ошибка генерации за {item['latency_sec']:.1f}s: {item['error']}")
                     continue
 
                 cand_scores.append(item["candidate_score"])
                 ref_scores.append(item["reference_score"])
+                latencies.append(item["latency_sec"])
                 if item["judge_candidate_win"] is not None:
                     judged += 1
                     if item["judge_candidate_win"]:
                         judge_wins += 1
                 if i <= 3 or item["candidate_score"] < 60:
                     print(f"  [{i}] {c['id']} score={item['candidate_score']} "
-                          f"ref={item['reference_score']} bubbles={len(item['candidate'])} "
+                          f"ref={item['reference_score']} bubbles={len(item['candidate_bubbles'])} "
+                          f"latency={item['latency_sec']:.1f}s "
                           f"{'| ' + '; '.join(item['reasons']) if item['reasons'] else ''}")
-
-        completed.sort(key=lambda x: x["index"])
     else:
-        for i, c in enumerate(cases, 1):
-            try:
-                raw = openrouter_chat(
-                    resolved_model,
-                    build_messages(system_prompt, c),
-                    args.temperature,
-                    retries=args.retries,
-                )
-                cand = parse_bubbles(raw)
-                consecutive_failures = 0
-            except Exception as e:
-                failures.append({"case_id": c.get("id"), "error": str(e)})
+        for i, c in pending_cases:
+            item = run_one((i, c))
+            _append_jsonl(jsonl_path, item, jsonl_lock)
+
+            if item["status"] == "error":
+                failures.append({"case_id": item["case_id"], "error": item["error"], "latency_sec": item["latency_sec"]})
                 consecutive_failures += 1
-                print(f"  [{i}/{len(cases)}] ошибка генерации: {e}")
+                print(f"  [{i}/{len(cases)}] ошибка генерации за {item['latency_sec']:.1f}s: {item['error']}")
                 if consecutive_failures >= args.max_consecutive_failures:
                     print(f"  остановка модели после {consecutive_failures} ошибок подряд")
                     break
                 continue
 
-            cs, reasons = heuristic_score(cand)
-            rs, _ = heuristic_score(c["reference_bubbles"])
-            cand_scores.append(cs); ref_scores.append(rs)
-            if args.judge:
-                # вслепую перемешиваем порядок
-                import random
-                if random.random() < 0.5:
-                    w = judge(args.judge, c["user_input"], cand, c["reference_bubbles"]); cand_is_a = True
-                else:
-                    w = judge(args.judge, c["user_input"], c["reference_bubbles"], cand); cand_is_a = False
+            consecutive_failures = 0
+            cand_scores.append(item["candidate_score"])
+            ref_scores.append(item["reference_score"])
+            latencies.append(item["latency_sec"])
+            if item["judge_candidate_win"] is not None:
                 judged += 1
-                if (w == "A") == cand_is_a:
+                if item["judge_candidate_win"]:
                     judge_wins += 1
-            if i <= 3 or cs < 60:
-                print(f"  [{i}] {c['id']} score={cs} ref={rs} bubbles={len(cand)} "
-                      f"{'| ' + '; '.join(reasons) if reasons else ''}")
+            if i <= 3 or item["candidate_score"] < 60:
+                print(f"  [{i}] {c['id']} score={item['candidate_score']} "
+                      f"ref={item['reference_score']} bubbles={len(item['candidate_bubbles'])} "
+                      f"latency={item['latency_sec']:.1f}s "
+                      f"{'| ' + '; '.join(item['reasons']) if item['reasons'] else ''}")
 
     result = {
         "label": model,
         "model": resolved_model,
         "n_requested": len(cases),
         "n_completed": len(cand_scores),
+        "n_resumed": len(resume_records),
         "failures": failures,
         "candidate_score": mean(cand_scores) if cand_scores else None,
         "reference_score": mean(ref_scores) if ref_scores else None,
         "temperature": args.temperature,
         "concurrency": args.concurrency,
+        "max_tokens": args.max_tokens,
+        "timeout": args.timeout,
+        "avg_latency_sec": mean(latencies) if latencies else None,
         "judge_model": args.judge,
         "judge_win_rate": (100 * judge_wins / judged) if judged else None,
     }
@@ -351,6 +541,8 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
         print(f"\nМОДЕЛЬ: {resolved_model}  (n={len(cand_scores)}, T={args.temperature})")
         print(f"  Балл кандидата: {result['candidate_score']:.1f}/100   "
               f"Эталон Михаила: {result['reference_score']:.1f}/100")
+        if result["avg_latency_sec"] is not None:
+            print(f"  Средняя latency по успешным кейсам: {result['avg_latency_sec']:.1f}s")
         if failures:
             print(f"  Ошибок генерации: {len(failures)}")
     else:
@@ -362,17 +554,31 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
     return result
 
 
-def write_results(results: list[dict], args: argparse.Namespace) -> None:
+def prepare_output_paths(args: argparse.Namespace) -> None:
+    """Set stable JSON/JSONL paths before generation so partial progress is recoverable."""
     out_path = Path(args.out) if args.out else HERE / "logs" / f"eval_openrouter_{int(time.time())}.json"
+    jsonl_path = Path(args.jsonl_out) if args.jsonl_out else out_path.with_suffix(".jsonl")
+    args.out_path = out_path
+    args.jsonl_path = jsonl_path
+
+
+def write_results(results: list[dict], args: argparse.Namespace) -> None:
+    out_path = args.out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "models": DEFAULT_MODELS,
         "n": args.n,
         "temperature": args.temperature,
+        "concurrency": args.concurrency,
+        "max_tokens": args.max_tokens,
+        "timeout": args.timeout,
+        "retries": args.retries,
+        "jsonl_path": str(args.jsonl_path),
         "results": results,
     }
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nРезультаты сохранены: {out_path}")
+    print(f"JSONL по кейсам: {args.jsonl_path}")
 
 
 def main():
@@ -383,15 +589,20 @@ def main():
     ap.add_argument("--judge", default=None)
     ap.add_argument("--n", type=int, default=len(CASES))
     ap.add_argument("--temperature", type=float, default=0.7)
-    ap.add_argument("--retries", type=int, default=3)
-    ap.add_argument("--concurrency", type=int, default=1)
+    ap.add_argument("--retries", type=int, default=1)
+    ap.add_argument("--concurrency", type=int, default=4)
+    ap.add_argument("--max-tokens", type=int, default=350)
+    ap.add_argument("--timeout", type=int, default=45)
     ap.add_argument("--max-consecutive-failures", type=int, default=8)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--jsonl-out", default=None)
+    ap.add_argument("--no-resume", action="store_true")
     ap.add_argument("--env-file", default=None, help="Optional .env path with OPENROUTER_API_KEY/OPEN_ROUTER_API_KEY")
     args = ap.parse_args()
 
     if args.env_file:
         load_dotenv(Path(args.env_file), override=True)
+        load_env_file(Path(args.env_file), override=True)
 
     cases = CASES[: args.n]
 
@@ -429,6 +640,12 @@ def main():
         print("укажи --model, напр. --model deepseek-v4-pro или --model all")
         print("доступные алиасы:", ", ".join(DEFAULT_MODELS))
         sys.exit(1)
+
+    prepare_output_paths(args)
+    args.out_path.parent.mkdir(parents=True, exist_ok=True)
+    args.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    if not args.no_resume:
+        print(f"resume включён: успешные кейсы будут подхвачены из {args.jsonl_path}")
 
     results = [run_generation(model, cases, args, system_prompt) for model in models]
     if len(results) > 1:

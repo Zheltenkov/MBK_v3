@@ -19,14 +19,16 @@ from typing import Iterable
 
 
 # USD за 1 000 000 токенов. Обновляй под актуальные тарифы.
+# "cached_input" — ставка за чтение из кэша (обычно 10–25% от обычного input).
+# Если не задана — берём input (консервативно, не занижаем стоимость).
 # Если модели нет в таблице — стоимость не считается, но токены всё равно копятся.
 PRICING_PER_MILLION_TOKENS: dict[str, dict[str, float]] = {
-    "qwen/qwen3.7-max":          {"input": 3.00,  "output": 9.00},
-    "qwen/qwen3.6-plus":         {"input": 1.20,  "output": 3.50},
-    "anthropic/claude-opus-4.7": {"input": 15.00, "output": 75.00},
-    "anthropic/claude-haiku-4.5":{"input": 0.80,  "output": 4.00},
-    "deepseek/deepseek-v4-pro":  {"input": 0.27,  "output": 1.10},
-    "openai/gpt-5.4-mini":       {"input": 0.15,  "output": 0.60},
+    "qwen/qwen3.7-max":          {"input": 3.00,  "output": 9.00,  "cached_input": 0.60},
+    "qwen/qwen3.6-plus":         {"input": 1.20,  "output": 3.50,  "cached_input": 0.24},
+    "anthropic/claude-opus-4.7": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
+    "anthropic/claude-haiku-4.5":{"input": 0.80,  "output": 4.00,  "cached_input": 0.08},
+    "deepseek/deepseek-v4-pro":  {"input": 0.27,  "output": 1.10,  "cached_input": 0.027},
+    "openai/gpt-5.4-mini":       {"input": 0.15,  "output": 0.60,  "cached_input": 0.015},
 }
 
 
@@ -36,16 +38,24 @@ class UsageEvent:
     role: str  # "conversation" | "extraction" | "opening" | "other"
     prompt_tokens: int
     completion_tokens: int
+    cached_tokens: int
     total_tokens: int
     cost_usd: float
     at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-def _compute_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+def _compute_cost_usd(model: str, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0) -> float:
     rates = PRICING_PER_MILLION_TOKENS.get(model)
     if not rates:
         return 0.0
-    return (prompt_tokens * rates["input"] + completion_tokens * rates["output"]) / 1_000_000
+    cached = max(0, min(int(cached_tokens or 0), int(prompt_tokens or 0)))
+    fresh_input = int(prompt_tokens or 0) - cached
+    cached_rate = rates.get("cached_input", rates["input"])
+    return (
+        fresh_input * rates["input"]
+        + cached * cached_rate
+        + int(completion_tokens or 0) * rates["output"]
+    ) / 1_000_000
 
 
 @dataclass
@@ -55,13 +65,14 @@ class SessionUsage:
     events: list[UsageEvent] = field(default_factory=list)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
-    def add(self, model: str, role: str, prompt_tokens: int, completion_tokens: int) -> UsageEvent:
-        cost = _compute_cost_usd(model, prompt_tokens, completion_tokens)
+    def add(self, model: str, role: str, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0) -> UsageEvent:
+        cost = _compute_cost_usd(model, prompt_tokens, completion_tokens, cached_tokens)
         event = UsageEvent(
             model=model,
             role=role,
             prompt_tokens=int(prompt_tokens or 0),
             completion_tokens=int(completion_tokens or 0),
+            cached_tokens=int(cached_tokens or 0),
             total_tokens=int((prompt_tokens or 0) + (completion_tokens or 0)),
             cost_usd=cost,
         )
@@ -70,9 +81,9 @@ class SessionUsage:
         return event
 
     def collector(self, role: str):
-        """Возвращает callback под llm_agent.stream_conversation(usage_collector=...)."""
-        def _cb(model: str, prompt_tokens: int, completion_tokens: int) -> None:
-            self.add(model, role, prompt_tokens, completion_tokens)
+        """Возвращает callback под llm_agent (model, prompt_tokens, completion_tokens, cached_tokens)."""
+        def _cb(model: str, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0) -> None:
+            self.add(model, role, prompt_tokens, completion_tokens, cached_tokens)
         return _cb
 
     def summary(self) -> dict:
@@ -80,23 +91,27 @@ class SessionUsage:
             events = list(self.events)
         by_role: dict[str, dict] = {}
         by_model: dict[str, dict] = {}
-        total_input = total_output = 0
+        total_input = total_output = total_cached = 0
         total_cost = 0.0
         for ev in events:
             for bucket, key in ((by_role, ev.role), (by_model, ev.model)):
-                slot = bucket.setdefault(key, {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0, "calls": 0})
+                slot = bucket.setdefault(key, {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "cost_usd": 0.0, "calls": 0})
                 slot["prompt_tokens"] += ev.prompt_tokens
                 slot["completion_tokens"] += ev.completion_tokens
+                slot["cached_tokens"] += ev.cached_tokens
                 slot["cost_usd"] += ev.cost_usd
                 slot["calls"] += 1
             total_input += ev.prompt_tokens
             total_output += ev.completion_tokens
+            total_cached += ev.cached_tokens
             total_cost += ev.cost_usd
         return {
             "session_id": self.session_id,
             "total_calls": len(events),
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
+            "total_cached_tokens": total_cached,
+            "cache_hit_ratio": round(total_cached / total_input, 3) if total_input else 0.0,
             "total_tokens": total_input + total_output,
             "total_cost_usd": round(total_cost, 6),
             "by_role": {k: _round_costs(v) for k, v in by_role.items()},
