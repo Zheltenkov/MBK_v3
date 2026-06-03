@@ -22,6 +22,9 @@ services:
     build: ./frontend
     container_name: mbk-frontend
     restart: unless-stopped
+    environment:
+      MBK_AUTH_USERNAME: ${MBK_AUTH_USERNAME:?MBK_AUTH_USERNAME is required}
+      MBK_AUTH_PASSWORD: ${MBK_AUTH_PASSWORD:?MBK_AUTH_PASSWORD is required}
     depends_on:
       backend:
         condition: service_healthy
