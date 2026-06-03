@@ -18,17 +18,19 @@ from threading import Lock
 from typing import Iterable
 
 
-# USD за 1 000 000 токенов. Обновляй под актуальные тарифы.
-# "cached_input" — ставка за чтение из кэша (обычно 10–25% от обычного input).
+# USD за 1 000 000 токенов. Сверено по OpenRouter /api/v1/models 2026-06-03.
+# "cached_input" — input_cache_read, ставка за чтение из кэша.
+# "cache_write" — input_cache_write, справочно; OpenRouter usage в текущих ответах
+# отдаёт cached_tokens/read, но не отдельные write-токены, поэтому расчёт ниже его не применяет.
 # Если не задана — берём input (консервативно, не занижаем стоимость).
 # Если модели нет в таблице — стоимость не считается, но токены всё равно копятся.
 PRICING_PER_MILLION_TOKENS: dict[str, dict[str, float]] = {
-    "qwen/qwen3.7-max":          {"input": 3.00,  "output": 9.00,  "cached_input": 0.60},
-    "qwen/qwen3.6-plus":         {"input": 1.20,  "output": 3.50,  "cached_input": 0.24},
-    "anthropic/claude-opus-4.7": {"input": 15.00, "output": 75.00, "cached_input": 1.50},
-    "anthropic/claude-haiku-4.5":{"input": 0.80,  "output": 4.00,  "cached_input": 0.08},
-    "deepseek/deepseek-v4-pro":  {"input": 0.27,  "output": 1.10,  "cached_input": 0.027},
-    "openai/gpt-5.4-mini":       {"input": 0.15,  "output": 0.60,  "cached_input": 0.015},
+    "qwen/qwen3.7-max":          {"input": 1.25,  "output": 3.75, "cached_input": 0.25,    "cache_write": 1.5625},
+    "qwen/qwen3.6-plus":         {"input": 0.325, "output": 1.95},
+    "anthropic/claude-opus-4.7": {"input": 5.00,  "output": 25.0, "cached_input": 0.50,    "cache_write": 6.25},
+    "anthropic/claude-haiku-4.5":{"input": 1.00,  "output": 5.00, "cached_input": 0.10,    "cache_write": 1.25},
+    "deepseek/deepseek-v4-pro":  {"input": 0.435, "output": 0.87, "cached_input": 0.003625},
+    "openai/gpt-5.4-mini":       {"input": 0.75,  "output": 4.50, "cached_input": 0.075},
 }
 
 
