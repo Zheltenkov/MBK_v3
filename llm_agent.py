@@ -25,7 +25,14 @@ _RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504}
 
 def _is_reasoning_model(model: str) -> bool:
     m = (model or "").lower()
-    return m.startswith("deepseek/deepseek-v4") or "reason" in m or "/o1" in m or "/o3" in m
+    return (
+        m.startswith("deepseek/deepseek-v4")
+        or m.startswith("qwen/qwen3.7-max")
+        or "qwen3.7-max" in m
+        or "reason" in m
+        or "/o1" in m
+        or "/o3" in m
+    )
 
 
 def _headers(config: AppConfig) -> dict[str, str]:
@@ -436,12 +443,38 @@ def _mentions_debt_distress(payload: dict[str, Any], facts: dict[str, Any]) -> b
     return any(marker in text for marker in markers)
 
 
+def _has_historical_overdue(debts: dict[str, Any]) -> bool:
+    value = debts.get("historical_overdue")
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return bool(text) and text not in {"нет", "не было", "false", "0", "none", "null"}
+
+
+def _block_product(pfr: dict[str, Any], product_id: str) -> None:
+    blocked = list(pfr.get("blocked_products") or [])
+    if product_id not in blocked:
+        blocked.append(product_id)
+    pfr["blocked_products"] = blocked
+    pfr["eligible_products"] = [p for p in (pfr.get("eligible_products") or []) if p != product_id]
+
+
 def _apply_deterministic_fit_overrides(state_update: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Apply deterministic product-fit facts that should not depend on LLM discretion."""
     facts = payload.get("current_facts") if isinstance(payload.get("current_facts"), dict) else {}
     debts = facts.get("debts") if isinstance(facts.get("debts"), dict) else {}
     employment = facts.get("employment") if isinstance(facts.get("employment"), dict) else {}
     household = facts.get("household") if isinstance(facts.get("household"), dict) else {}
+
+    pfr = state_update.get("product_fit_result") or {}
+    if _has_historical_overdue(debts):
+        _block_product(pfr, "unsecured_loan")
+        _block_product(pfr, "partner_unsecured")
+        if pfr.get("recommended_product_id") in {"unsecured_loan", "partner_unsecured"}:
+            pfr["recommended_product_id"] = None
+        state_update["product_fit_result"] = pfr
 
     debt_total = _as_float(debts.get("total"))
     monthly_income = _as_float(employment.get("monthly_income") or employment.get("income"))
@@ -450,7 +483,6 @@ def _apply_deterministic_fit_overrides(state_update: dict[str, Any], payload: di
     if not _mentions_debt_distress(payload, facts):
         return state_update
 
-    pfr = state_update.get("product_fit_result") or {}
     current_rec = pfr.get("recommended_product_id")
     if current_rec not in (None, "", "bfl_realization", "bfl_restructuring"):
         return state_update

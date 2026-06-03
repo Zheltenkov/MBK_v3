@@ -15,6 +15,7 @@ mikhail_eval_cases.json.
       с эталоном. Прогоните на 2-3 моделях — увидите, какая ближе к Михаилу.
       Полный быстрый прогон: --concurrency 4..8 --retries 1 --timeout 45 --max-tokens 350.
       Каждый кейс пишется в JSONL сразу; повторный запуск продолжит с готовых кейсов.
+      По умолчанию eval подавляет reasoning у reasoning-моделей; --allow-reasoning включает A/B контроль.
 
   ... --judge openai/gpt-4o   (доп. к gen)
       LLM-судья сравнивает кандидата с эталоном вслепую: «кто звучит как живой занятой
@@ -172,14 +173,79 @@ def resolve_model_id(model: str) -> str:
     return MODEL_ALIASES.get(raw.lower(), raw)
 
 
-def openrouter_chat(model: str, messages: list[dict], temperature: float = 0.7,
-                    max_tokens: int = 700, retries: int = 3, timeout: int = 90) -> str:
+def _is_reasoning_model(model: str) -> bool:
+    m = (model or "").lower()
+    return (
+        m.startswith("deepseek/deepseek-v4")
+        or m.startswith("qwen/qwen3.7-max")
+        or "qwen3.7-max" in m
+        or "reason" in m
+        or "/o1" in m
+        or "/o3" in m
+    )
+
+
+def _should_suppress_reasoning(model: str, allow_reasoning: bool) -> bool:
+    return (not allow_reasoning) and _is_reasoning_model(model)
+
+
+def _maybe_suppress_reasoning(payload: dict, model: str, allow_reasoning: bool) -> bool:
+    if not _should_suppress_reasoning(model, allow_reasoning):
+        return False
+    payload["reasoning"] = {"effort": "none", "exclude": True}
+    payload["include_reasoning"] = False
+    return True
+
+
+def _extract_cached_tokens(usage: dict | None) -> int:
+    """Extract cached prompt tokens from OpenRouter/OpenAI-compatible usage payloads."""
+    if not isinstance(usage, dict):
+        return 0
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        return int(details.get("cached_tokens", 0) or 0)
+    return int(usage.get("cached_tokens", 0) or 0)
+
+
+def _normalize_usage(usage: dict | None) -> dict:
+    """Normalize token usage so eval artifacts are comparable across providers."""
+    if not isinstance(usage, dict):
+        return {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "cached_tokens": None,
+            "cache_hit_ratio": None,
+        }
+    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+    total_tokens = int(usage.get("total_tokens", 0) or (prompt_tokens + completion_tokens))
+    cached_tokens = _extract_cached_tokens(usage)
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cached_tokens": cached_tokens,
+        "cache_hit_ratio": round(cached_tokens / prompt_tokens, 3) if prompt_tokens else 0.0,
+    }
+
+
+def openrouter_chat_response(
+    model: str,
+    messages: list[dict],
+    temperature: float = 0.7,
+    max_tokens: int = 700,
+    retries: int = 3,
+    timeout: int = 90,
+    allow_reasoning: bool = False,
+) -> dict:
     key = get_openrouter_api_key()
     payload = {
         "model": model, "messages": messages,
         "temperature": temperature,
         "max_tokens": max(max_tokens, 1800) if model.startswith("deepseek/deepseek-v4") else max_tokens,
     }
+    reasoning_suppressed = _maybe_suppress_reasoning(payload, model, allow_reasoning)
     body = json.dumps(payload).encode("utf-8")
     last_error: Exception | None = None
 
@@ -205,7 +271,11 @@ def openrouter_chat(model: str, messages: list[dict], temperature: float = 0.7,
                 raise ValueError(
                     f"empty model content; finish_reason={finish_reason}; reasoning_len={reasoning_len}"
                 )
-            return str(content)
+            return {
+                "content": str(content),
+                "usage": _normalize_usage(data.get("usage")),
+                "reasoning_suppressed": reasoning_suppressed,
+            }
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:800]
             last_error = RuntimeError(f"HTTP {e.code}: {detail}")
@@ -218,6 +288,20 @@ def openrouter_chat(model: str, messages: list[dict], temperature: float = 0.7,
             time.sleep(1.5 * attempt)
 
     raise RuntimeError(str(last_error))
+
+
+def openrouter_chat(model: str, messages: list[dict], temperature: float = 0.7,
+                    max_tokens: int = 700, retries: int = 3, timeout: int = 90,
+                    allow_reasoning: bool = False) -> str:
+    return openrouter_chat_response(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        retries=retries,
+        timeout=timeout,
+        allow_reasoning=allow_reasoning,
+    )["content"]
 
 
 def strip_code_fence(raw: str) -> str:
@@ -261,12 +345,14 @@ def judge(
     b: list[str],
     retries: int = 3,
     timeout: int = 90,
+    allow_reasoning: bool = False,
 ) -> str:
     prompt = (f"Сообщение клиента: {user_input}\n\n"
               f"Ответ A:\n" + "\n".join(a) + "\n\nОтвет B:\n" + "\n".join(b))
     out = openrouter_chat(model, [{"role": "system", "content": JUDGE_SYS},
                                   {"role": "user", "content": prompt}],
-                          temperature=0, max_tokens=16, retries=retries, timeout=timeout)
+                          temperature=0, max_tokens=16, retries=retries, timeout=timeout,
+                          allow_reasoning=allow_reasoning)
     return "A" if "a" in out.lower()[:3] else "B"
 
 
@@ -320,6 +406,8 @@ def _make_success_record(
     reasons: list[str],
     judge_candidate_win: bool | None,
     latency_sec: float,
+    usage: dict,
+    reasoning_suppressed: bool,
     args: argparse.Namespace,
 ) -> dict:
     return {
@@ -334,6 +422,9 @@ def _make_success_record(
         "reasons": reasons,
         "judge_candidate_win": judge_candidate_win,
         "latency_sec": round(latency_sec, 3),
+        "usage": usage,
+        "reasoning_suppressed": reasoning_suppressed,
+        "allow_reasoning": args.allow_reasoning,
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
         "timeout": args.timeout,
@@ -362,13 +453,28 @@ def _make_failure_record(
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
         "timeout": args.timeout,
+        "allow_reasoning": args.allow_reasoning,
         "created_at": int(time.time()),
     }
 
 
+def _has_token_usage(usage: dict | None) -> bool:
+    return isinstance(usage, dict) and usage.get("prompt_tokens") is not None
+
+
+def _mean_usage(usages: list[dict], key: str) -> float | None:
+    values = [int(u.get(key) or 0) for u in usages if _has_token_usage(u)]
+    return mean(values) if values else None
+
+
+def _total_usage(usages: list[dict], key: str) -> int | None:
+    values = [int(u.get(key) or 0) for u in usages if _has_token_usage(u)]
+    return sum(values) if values else None
+
+
 def run_generation(model: str, cases: list[dict], args: argparse.Namespace, system_prompt: str) -> dict:
     resolved_model = resolve_model_id(model)
-    cand_scores, ref_scores, judge_wins, judged, failures, latencies = [], [], 0, 0, [], []
+    cand_scores, ref_scores, judge_wins, judged, failures, latencies, token_usages = [], [], 0, 0, [], [], []
     consecutive_failures = 0
     jsonl_path = getattr(args, "jsonl_path", None)
     jsonl_lock = Lock()
@@ -385,6 +491,8 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
             ref_scores.append(record["reference_score"])
             if record.get("latency_sec") is not None:
                 latencies.append(float(record["latency_sec"]))
+            if _has_token_usage(record.get("usage")):
+                token_usages.append(record["usage"])
             if record.get("judge_candidate_win") is not None:
                 judged += 1
                 if record["judge_candidate_win"]:
@@ -403,14 +511,16 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
         i, c = index_case
         started = time.perf_counter()
         try:
-            raw = openrouter_chat(
-                resolved_model,
-                build_messages(system_prompt, c),
-                args.temperature,
+            response = openrouter_chat_response(
+                model=resolved_model,
+                messages=build_messages(system_prompt, c),
+                temperature=args.temperature,
                 max_tokens=args.max_tokens,
                 retries=args.retries,
                 timeout=args.timeout,
+                allow_reasoning=args.allow_reasoning,
             )
+            raw = response["content"]
             cand = parse_bubbles(raw)
             cs, reasons = heuristic_score(cand)
             rs, _ = heuristic_score(c["reference_bubbles"])
@@ -426,6 +536,7 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
                         c["reference_bubbles"],
                         retries=args.retries,
                         timeout=args.timeout,
+                        allow_reasoning=args.allow_reasoning,
                     )
                 else:
                     w = judge(
@@ -435,6 +546,7 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
                         cand,
                         retries=args.retries,
                         timeout=args.timeout,
+                        allow_reasoning=args.allow_reasoning,
                     )
                 judge_candidate_win = (w == "A") == cand_is_a
             latency_sec = time.perf_counter() - started
@@ -449,6 +561,8 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
                 reasons=reasons,
                 judge_candidate_win=judge_candidate_win,
                 latency_sec=latency_sec,
+                usage=response["usage"],
+                reasoning_suppressed=bool(response.get("reasoning_suppressed")),
                 args=args,
             )
         except Exception as e:
@@ -482,6 +596,8 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
                 cand_scores.append(item["candidate_score"])
                 ref_scores.append(item["reference_score"])
                 latencies.append(item["latency_sec"])
+                if _has_token_usage(item.get("usage")):
+                    token_usages.append(item["usage"])
                 if item["judge_candidate_win"] is not None:
                     judged += 1
                     if item["judge_candidate_win"]:
@@ -509,6 +625,8 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
             cand_scores.append(item["candidate_score"])
             ref_scores.append(item["reference_score"])
             latencies.append(item["latency_sec"])
+            if _has_token_usage(item.get("usage")):
+                token_usages.append(item["usage"])
             if item["judge_candidate_win"] is not None:
                 judged += 1
                 if item["judge_candidate_win"]:
@@ -519,6 +637,8 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
                       f"latency={item['latency_sec']:.1f}s "
                       f"{'| ' + '; '.join(item['reasons']) if item['reasons'] else ''}")
 
+    total_prompt_tokens = _total_usage(token_usages, "prompt_tokens")
+    total_cached_tokens = _total_usage(token_usages, "cached_tokens")
     result = {
         "label": model,
         "model": resolved_model,
@@ -532,7 +652,23 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
         "concurrency": args.concurrency,
         "max_tokens": args.max_tokens,
         "timeout": args.timeout,
+        "allow_reasoning": args.allow_reasoning,
+        "reasoning_suppressed": _should_suppress_reasoning(resolved_model, args.allow_reasoning),
         "avg_latency_sec": mean(latencies) if latencies else None,
+        "usage_n": len(token_usages),
+        "avg_prompt_tokens_per_dialog": _mean_usage(token_usages, "prompt_tokens"),
+        "avg_completion_tokens_per_dialog": _mean_usage(token_usages, "completion_tokens"),
+        "avg_total_tokens_per_dialog": _mean_usage(token_usages, "total_tokens"),
+        "avg_cached_tokens_per_dialog": _mean_usage(token_usages, "cached_tokens"),
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": _total_usage(token_usages, "completion_tokens"),
+        "total_tokens": _total_usage(token_usages, "total_tokens"),
+        "total_cached_tokens": total_cached_tokens,
+        "cache_hit_ratio": (
+            round(total_cached_tokens / total_prompt_tokens, 3)
+            if total_prompt_tokens
+            else None
+        ),
         "judge_model": args.judge,
         "judge_win_rate": (100 * judge_wins / judged) if judged else None,
     }
@@ -543,6 +679,15 @@ def run_generation(model: str, cases: list[dict], args: argparse.Namespace, syst
               f"Эталон Михаила: {result['reference_score']:.1f}/100")
         if result["avg_latency_sec"] is not None:
             print(f"  Средняя latency по успешным кейсам: {result['avg_latency_sec']:.1f}s")
+        if result["avg_total_tokens_per_dialog"] is not None:
+            print(
+                "  Средние токены на диалог: "
+                f"input={result['avg_prompt_tokens_per_dialog']:.0f}, "
+                f"output={result['avg_completion_tokens_per_dialog']:.0f}, "
+                f"total={result['avg_total_tokens_per_dialog']:.0f}, "
+                f"cached={result['avg_cached_tokens_per_dialog']:.0f}, "
+                f"cache_hit_ratio={result['cache_hit_ratio']}"
+            )
         if failures:
             print(f"  Ошибок генерации: {len(failures)}")
     else:
@@ -573,6 +718,7 @@ def write_results(results: list[dict], args: argparse.Namespace) -> None:
         "max_tokens": args.max_tokens,
         "timeout": args.timeout,
         "retries": args.retries,
+        "allow_reasoning": args.allow_reasoning,
         "jsonl_path": str(args.jsonl_path),
         "results": results,
     }
@@ -593,6 +739,7 @@ def main():
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--max-tokens", type=int, default=350)
     ap.add_argument("--timeout", type=int, default=45)
+    ap.add_argument("--allow-reasoning", action="store_true")
     ap.add_argument("--max-consecutive-failures", type=int, default=8)
     ap.add_argument("--out", default=None)
     ap.add_argument("--jsonl-out", default=None)
