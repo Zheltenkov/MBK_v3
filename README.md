@@ -15,15 +15,9 @@
 ## Где Docker images
 
 Готовый image-пакет `mbk_images_package_20260615.zip` не хранится в git-ветке, потому что
-его размер около 214 МБ. Обычный GitHub repository не подходит для таких бинарников.
-
-Передайте файл отдельно или загрузите его в GitHub Release asset:
-
-- `mbk_images_package_20260615.zip`
-
 Контрольная сумма есть в `ARTIFACTS.sha256`.
 
-## Запуск у партнёра
+## Запуск 
 
 1. Скачать/получить `mbk_images_package_20260615.zip`.
 2. Распаковать его рядом с файлами этой ветки.
@@ -56,20 +50,12 @@ curl -i http://127.0.0.1:${MBK_PORT:-80}/api/health
 ## Что обязательно заполнить в `.env`
 
 - `OPEN_ROUTER_API_KEY`
-- `OPENROUTER_BASE_URL`
-- `OPENROUTER_PROXY`, если доступ к OpenRouter идёт через зарубежный VPS
-- `OPENROUTER_MODEL`
-- `OPENROUTER_EXTRACTOR_MODEL`
-- `MBK_AUTH_USERNAME`
-- `MBK_AUTH_PASSWORD`
+- `OPENROUTER_BASE_URL` - https://openrouter.ai/api/v1
+- `OPENROUTER_PROXY`
+- `OPENROUTER_MODEL` - qwen/qwen3.7-max
+- `OPENROUTER_EXTRACTOR_MODEL` - deepseek/deepseek-v4-pro
 - `MBK_PORT`
 
 См. детали в `HANDOFF.md`.
 
 ## Что не передаётся
-
-- Реальный `.env`.
-- `logs/` с ПД клиентов.
-- Eval-кухня и эталонные кейсы.
-- Legacy Streamlit UI.
-- `node_modules`, `frontend/dist`, virtualenv/cache.
