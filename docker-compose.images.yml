@@ -1,14 +1,11 @@
 services:
   backend:
-    build: .
+    image: mbk-backend:handoff-20260615
     container_name: mbk-backend
     restart: unless-stopped
     env_file: .env
     expose:
       - "8000"
-    # Порт наружу пробрасываем только в dev (раскомментируй для отладки):
-    # ports:
-    #   - "8000:8000"
     volumes:
       - mbk_logs:/app/logs
     healthcheck:
@@ -19,7 +16,7 @@ services:
       start_period: 15s
 
   frontend:
-    build: ./frontend
+    image: mbk-frontend:handoff-20260615
     container_name: mbk-frontend
     restart: unless-stopped
     depends_on:

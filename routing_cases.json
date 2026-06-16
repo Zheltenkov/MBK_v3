@@ -563,6 +563,34 @@
       "recommended": "bfl_realization",
       "blocked_includes": []
     }
+  },
+  {
+    "id": "r20_small_debt_no_assets_no_bfl",
+    "label": "Долг 70к, просрочки, нет активов → честный тупик, НЕ банкротство (сумма ниже порога)",
+    "facts": {
+      "client": {
+        "age": 35
+      },
+      "debts": {
+        "total": 70000,
+        "has_current_overdue": true
+      },
+      "assets": {
+        "has_car": false,
+        "type": "Нет активов"
+      },
+      "employment": {
+        "type": "найм",
+        "monthly_income": 40000
+      }
+    },
+    "user_input": "Просрочки есть, активов нет, долг 70 тысяч. Хотел кредит взять.",
+    "expected": {
+      "recommended": null,
+      "blocked_includes": [
+        "bfl_realization",
+        "bfl_restructuring"
+      ]
+    }
   }
 ]
-

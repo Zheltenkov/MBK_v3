@@ -18,6 +18,7 @@ export function clearSessionId() {
 async function jsonFetch(url, options = {}) {
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    credentials: 'same-origin',
     ...options,
   });
   if (!res.ok) {
@@ -26,6 +27,21 @@ async function jsonFetch(url, options = {}) {
     throw new Error(`${res.status}: ${detail}`);
   }
   return res.json();
+}
+
+export async function login(username, password) {
+  return jsonFetch('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function getAuthStatus() {
+  return jsonFetch('/api/auth/me');
+}
+
+export async function logout() {
+  return jsonFetch('/api/auth/logout', { method: 'POST' });
 }
 
 export async function getHealth() {

@@ -10,3 +10,9 @@ logs/
 .tmp/
 .playwright-mcp/
 .streamlit/secrets.toml
+frontend/node_modules/
+frontend/dist/
+.tmp/handoff/
+mbk_handoff_*.zip
+mbk_images_*.tar
+mbk_images_package_*.zip

@@ -11,9 +11,22 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Код приложения (без logs/.streamlit/.env — они через volume / env-файл).
-COPY *.py ./
-COPY *.json ./
+# Runtime-код приложения. Копируем явным allowlist, чтобы в образ случайно
+# не попадали eval-наборы, legacy UI, локальные скрипты или будущие dev-файлы.
+COPY assistant_contracts.py ./
+COPY config.py ./
+COPY core.py ./
+COPY lead_delivery.py ./
+COPY llm_agent.py ./
+COPY logger.py ./
+COPY main.py ./
+COPY observability.py ./
+COPY pii_masking.py ./
+COPY prompts.py ./
+COPY session_store.py ./
+COPY state.py ./
+COPY usage_tracker.py ./
+COPY utils.py ./
 
 # Logs пишутся в volume, директорию создаём заранее.
 RUN mkdir -p logs/sessions && \

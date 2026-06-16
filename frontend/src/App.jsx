@@ -1,8 +1,18 @@
 import { useEffect, useState } from 'react';
+import AuthScreen from './components/AuthScreen.jsx';
 import LandingScreen from './components/LandingScreen.jsx';
 import AnketaForm from './components/AnketaForm.jsx';
 import ChatView from './components/ChatView.jsx';
-import { clearSessionId, createSession, getSessionState, loadSessionId, saveSessionId } from './api.js';
+import {
+  clearSessionId,
+  createSession,
+  getAuthStatus,
+  getSessionState,
+  loadSessionId,
+  login,
+  logout,
+  saveSessionId,
+} from './api.js';
 
 const SCREEN = { LANDING: 'landing', ANKETA: 'anketa', CHAT: 'chat' };
 
@@ -12,31 +22,58 @@ export default function App() {
   const [initialState, setInitialState] = useState(null);
   const [bootError, setBootError] = useState(null);
   const [booting, setBooting] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authError, setAuthError] = useState(null);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
 
-  // На старте — пытаемся восстановить сессию из sessionStorage.
+  // На старте сначала проверяем cookie-сессию, затем восстанавливаем чат.
   useEffect(() => {
     let cancelled = false;
-    const stored = loadSessionId();
-    if (!stored) {
-      setBooting(false);
-      return;
-    }
     (async () => {
       try {
-        const { state } = await getSessionState(stored);
+        const auth = await getAuthStatus();
+        if (!auth.ok) throw new Error('not authenticated');
         if (cancelled) return;
-        setSessionId(stored);
-        setInitialState(state);
-        setScreen(SCREEN.CHAT);
+        setIsAuthenticated(true);
+        await restoreSession(cancelled);
       } catch {
-        // 404 или другая ошибка — сессию серверная сторона не помнит, начинаем с нуля.
         clearSessionId();
+        if (!cancelled) setIsAuthenticated(false);
       } finally {
         if (!cancelled) setBooting(false);
       }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  const restoreSession = async (cancelled) => {
+    const stored = loadSessionId();
+    if (!stored) return;
+    try {
+      const { state } = await getSessionState(stored);
+      if (cancelled) return;
+      setSessionId(stored);
+      setInitialState(state);
+      setScreen(SCREEN.CHAT);
+    } catch {
+      // 404 или другая ошибка — сессию серверная сторона не помнит, начинаем с нуля.
+      clearSessionId();
+    }
+  };
+
+  const handleLogin = async (username, password) => {
+    setAuthError(null);
+    setAuthSubmitting(true);
+    try {
+      await login(username, password);
+      setIsAuthenticated(true);
+      await restoreSession(false);
+    } catch (e) {
+      setAuthError(e.message || String(e));
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
 
   const startChat = async (anketa) => {
     setBootError(null);
@@ -58,13 +95,31 @@ export default function App() {
     setScreen(SCREEN.LANDING);
   };
 
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      // Даже если сервер не ответил, локально закрываем UI-сессию.
+    }
+    clearSessionId();
+    setSessionId(null);
+    setInitialState(null);
+    setScreen(SCREEN.LANDING);
+    setIsAuthenticated(false);
+    setAuthError(null);
+  };
+
   if (booting) {
     return <FullPageSpinner label="Открываем сессию…" />;
   }
 
+  if (!isAuthenticated) {
+    return <AuthScreen onLogin={handleLogin} error={authError} isSubmitting={authSubmitting} />;
+  }
+
   return (
     <div className="h-full flex flex-col">
-      <Header onReset={screen === SCREEN.CHAT ? resetSession : null} />
+      <Header onReset={screen === SCREEN.CHAT ? resetSession : null} onLogout={handleLogout} />
       <main className="flex-1 overflow-hidden">
         {screen === SCREEN.LANDING && (
           <LandingScreen
@@ -88,7 +143,7 @@ export default function App() {
   );
 }
 
-function Header({ onReset }) {
+function Header({ onReset, onLogout }) {
   return (
     <header className="border-b border-slate-200 bg-white">
       <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
@@ -96,11 +151,16 @@ function Header({ onReset }) {
           <span className="text-xl">💬</span>
           <span className="font-semibold text-slate-800">МБК — Ассистент</span>
         </div>
-        {onReset && (
-          <button onClick={onReset} className="text-sm text-slate-500 hover:text-slate-700">
-            Новая сессия
+        <div className="flex items-center gap-3">
+          {onReset && (
+            <button onClick={onReset} className="text-sm text-slate-500 hover:text-slate-700">
+              Новая сессия
+            </button>
+          )}
+          <button onClick={onLogout} className="text-sm text-slate-500 hover:text-slate-700">
+            Выйти
           </button>
-        )}
+        </div>
       </div>
     </header>
   );

@@ -26,6 +26,15 @@ class AppConfig:
     # Qwen 3.7-max и Anthropic-модели поддерживают cache_control. Если провайдер
     # не поддерживает — параметр игнорируется, ничего не ломает.
     enable_prompt_cache: bool = True
+    # Маскировка ПД перед отправкой в зарубежные LLM (ФИО→только имя, телефон скрыт,
+    # ДР→только год, адрес→только город). На нашем сервере хранится оригинал.
+    enable_pii_masking: bool = True
+    # Базовый URL OpenRouter (или совместимого шлюза). Меняется для прокси-шлюзов.
+    base_url: str = "https://openrouter.ai/api/v1"
+    # HTTP(S)-прокси для исходящих запросов к LLM. Пусто — берём из env HTTPS_PROXY/HTTP_PROXY.
+    proxy_url: str | None = None
+    # Таймаут запроса к модели, сек. Через прокси/иностранный VPS латентность выше.
+    request_timeout: int = 120
 
 
 def _read_env_value(name: str) -> str | None:
@@ -48,4 +57,8 @@ def load_config() -> AppConfig:
         temperature=float(_read_env_value("OPENROUTER_TEMPERATURE") or 0.7),
         max_tokens=int(_read_env_value("OPENROUTER_MAX_TOKENS") or 5000),
         enable_prompt_cache=(_read_env_value("OPENROUTER_PROMPT_CACHE") or "1") not in ("0", "false", "False", "no"),
+        enable_pii_masking=(_read_env_value("ENABLE_PII_MASKING") or "1") not in ("0", "false", "False", "no"),
+        base_url=(_read_env_value("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1").rstrip("/"),
+        proxy_url=_read_env_value("OPENROUTER_PROXY") or _read_env_value("HTTPS_PROXY") or _read_env_value("HTTP_PROXY"),
+        request_timeout=int(_read_env_value("OPENROUTER_TIMEOUT") or 120),
     )

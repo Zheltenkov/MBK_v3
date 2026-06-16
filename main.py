@@ -26,9 +26,14 @@ state-событие приходит с задержкой 2–5 сек. Меж
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
+import secrets
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -104,6 +109,35 @@ class CreateSessionBody(BaseModel):
     anketa: dict[str, Any] | None = None
 
 
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+AUTH_COOKIE_NAME = "mbk_auth"
+AUTH_TTL_SECONDS = int(os.getenv("MBK_AUTH_TTL_SECONDS", "43200"))
+
+
+# --------------------------------------------------------------------------- #
+# Статическая авторизация
+# --------------------------------------------------------------------------- #
+@app.middleware("http")
+async def require_api_auth(request: Request, call_next):
+    path = request.url.path
+    public_api = path == "/api/health" or path.startswith("/api/auth/")
+    if not path.startswith("/api/") or public_api:
+        return await call_next(request)
+
+    try:
+        authorized = _verify_auth_token(request.cookies.get(AUTH_COOKIE_NAME))
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    if not authorized:
+        return JSONResponse(status_code=401, content={"detail": "Требуется авторизация"})
+    return await call_next(request)
+
+
 # --------------------------------------------------------------------------- #
 # Эндпоинты
 # --------------------------------------------------------------------------- #
@@ -115,6 +149,42 @@ async def health() -> dict:
         "conversation_model": cfg.model,
         "extractor_model": cfg.extractor_model or cfg.model,
     }
+
+
+@app.post("/api/auth/login")
+async def login(body: LoginBody) -> JSONResponse:
+    expected_username, expected_password = _auth_credentials()
+    username_ok = hmac.compare_digest(body.username.strip(), expected_username)
+    password_ok = hmac.compare_digest(body.password, expected_password)
+    if not (username_ok and password_ok):
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+
+    response = JSONResponse(content={"ok": True, "username": expected_username})
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        _make_auth_token(expected_username),
+        max_age=AUTH_TTL_SECONDS,
+        httponly=True,
+        secure=_secure_auth_cookie(),
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request) -> dict:
+    username = _auth_username_from_token(request.cookies.get(AUTH_COOKIE_NAME))
+    if not username:
+        return {"ok": False, "username": None}
+    return {"ok": True, "username": username}
+
+
+@app.post("/api/auth/logout")
+async def logout() -> JSONResponse:
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    return response
 
 
 @app.post("/api/session")
@@ -375,6 +445,71 @@ def _public_state(session: Session) -> dict:
 
 def _sse_error(message: str) -> dict:
     return {"event": "error", "data": json.dumps({"message": message}, ensure_ascii=False)}
+
+
+def _auth_credentials() -> tuple[str, str]:
+    username = _read_env_value("MBK_AUTH_USERNAME")
+    password = _read_env_value("MBK_AUTH_PASSWORD")
+    if not username or not password:
+        raise HTTPException(status_code=503, detail="Не настроены MBK_AUTH_USERNAME и MBK_AUTH_PASSWORD")
+    return username, password
+
+
+def _read_env_value(name: str) -> str | None:
+    value = os.getenv(name) or os.getenv(f"$env:{name}")
+    return value.strip() if value else None
+
+
+def _secure_auth_cookie() -> bool:
+    value = (_read_env_value("MBK_AUTH_COOKIE_SECURE") or "0").lower()
+    return value in {"1", "true", "yes"}
+
+
+def _make_auth_token(username: str) -> str:
+    expires_at = int(time.time()) + AUTH_TTL_SECONDS
+    payload = {"u": username, "exp": expires_at, "n": secrets.token_urlsafe(16)}
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload_b64 = _base64url_encode(payload_json)
+    signature = _sign_auth_payload(payload_b64)
+    return f"{payload_b64}.{signature}"
+
+
+def _verify_auth_token(token: str | None) -> bool:
+    return _auth_username_from_token(token) is not None
+
+
+def _auth_username_from_token(token: str | None) -> str | None:
+    if not token or "." not in token:
+        return None
+    payload_b64, signature = token.split(".", 1)
+    if not hmac.compare_digest(signature, _sign_auth_payload(payload_b64)):
+        return None
+    try:
+        payload = json.loads(_base64url_decode(payload_b64))
+        username = str(payload.get("u") or "")
+        expires_at = int(payload.get("exp") or 0)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+    expected_username, _ = _auth_credentials()
+    if time.time() >= expires_at:
+        return None
+    if not hmac.compare_digest(username, expected_username):
+        return None
+    return username
+
+
+def _sign_auth_payload(payload_b64: str) -> str:
+    _, password = _auth_credentials()
+    return hmac.new(password.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _base64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _base64url_decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode((data + padding).encode("ascii"))
 
 
 # --------------------------------------------------------------------------- #

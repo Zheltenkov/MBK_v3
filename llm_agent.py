@@ -477,6 +477,22 @@ def _apply_deterministic_fit_overrides(state_update: dict[str, Any], payload: di
         state_update["product_fit_result"] = pfr
 
     debt_total = _as_float(debts.get("total"))
+
+    # ЖЁСТКИЙ СТОП БФЛ ПО СУММЕ. Банкротство при долге < 300 000 экономически бессмысленно
+    # (процедура стоит дороже долга). Поэтому фиксируем блок всегда, а не только когда
+    # модель попыталась рекомендовать БФЛ: downstream eval/логика должны видеть явную причину тупика.
+    if debt_total is not None and debt_total < 300_000:
+        _block_product(pfr, "bfl_realization")
+        _block_product(pfr, "bfl_restructuring")
+        if pfr.get("recommended_product_id") in {"bfl_realization", "bfl_restructuring", "bfl"}:
+            pfr["recommended_product_id"] = None
+        # Помечаем причину — извлекатель/лог увидят, что это осознанный блок, не пустота.
+        reasons = list(pfr.get("block_reasons") or [])
+        if "bfl_debt_below_threshold" not in reasons:
+            reasons.append("bfl_debt_below_threshold")
+        pfr["block_reasons"] = reasons
+        state_update["product_fit_result"] = pfr
+
     monthly_income = _as_float(employment.get("monthly_income") or employment.get("income"))
     if debt_total is None or monthly_income is None or debt_total < 300_000:
         return state_update
